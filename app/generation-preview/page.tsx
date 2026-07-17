@@ -3,7 +3,15 @@
 import { useEffect, useState, Suspense, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
-import { CheckCircle2, Sparkles, AlertCircle, AlertTriangle, ArrowLeft, Bot } from 'lucide-react';
+import {
+  CheckCircle2,
+  Sparkles,
+  AlertCircle,
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  RefreshCw,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -40,6 +48,8 @@ import { createLogger } from '@/lib/logger';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
 import { StepVisualizer } from './components/visualizers';
 import { resolveTaskEngineModeFromOutlineDoneEvent } from './vocational-mode';
+import { createRetryGenerationSession } from './retry-session';
+import { persistInitialGenerationAttempt } from './persist-attempt';
 
 const log = createLogger('GenerationPreview');
 const OUTLINE_REVIEW_AUTO_CONTINUE_MS = 2500;
@@ -49,6 +59,13 @@ function GenerationPreviewContent() {
   const { t } = useI18n();
   const hasStartedRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const attemptStageIdRef = useRef<string | null>(null);
+  const attemptGeneratedAgentIdsRef = useRef<string[]>([]);
+  const attemptAudioIdsRef = useRef<string[]>([]);
+  const attemptAgentSelectionRef = useRef<{
+    selectedAgentIds: string[];
+    isUserSet: boolean;
+  } | null>(null);
   const outlineReviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outlineReviewResolveRef = useRef<((outlines: SceneOutline[]) => void) | null>(null);
   // Sticky flag: true once the user signals review intent (either by clicking the
@@ -71,6 +88,7 @@ function GenerationPreviewContent() {
   );
   const [showAgentReveal, setShowAgentReveal] = useState(false);
   const [isConfirmingOutlines, setIsConfirmingOutlines] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [generatedAgents, setGeneratedAgents] = useState<
     Array<{
       id: string;
@@ -101,6 +119,73 @@ function GenerationPreviewContent() {
       clearTimeout(outlineReviewTimerRef.current);
       outlineReviewTimerRef.current = null;
     }
+  };
+
+  const waitForAgentReveal = (signal: AbortSignal): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+
+      const onAbort = () => {
+        agentRevealResolveRef.current = null;
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      agentRevealResolveRef.current = () => {
+        signal.removeEventListener('abort', onAbort);
+        agentRevealResolveRef.current = null;
+        resolve();
+      };
+    });
+
+  const discardGenerationAttempt = async () => {
+    const stageId = attemptStageIdRef.current;
+    const generatedAgentIds = attemptGeneratedAgentIdsRef.current;
+    const audioIds = attemptAudioIdsRef.current;
+    const previousAgentSelection = attemptAgentSelectionRef.current;
+
+    // Claim the attempt before awaiting so a simultaneous abort/unmount cleanup
+    // cannot delete data belonging to the next retry.
+    attemptStageIdRef.current = null;
+    attemptGeneratedAgentIdsRef.current = [];
+    attemptAudioIdsRef.current = [];
+    attemptAgentSelectionRef.current = null;
+    setShowAgentReveal(false);
+    setGeneratedAgents([]);
+
+    if (stageId) {
+      try {
+        const { deleteStageWithRelatedData } = await import('@/lib/utils/database');
+        await deleteStageWithRelatedData(stageId);
+      } catch (cleanupError) {
+        log.error('[GenerationPreview] Failed to discard stage attempt:', cleanupError);
+      }
+
+      if (audioIds.length > 0) {
+        try {
+          const { db } = await import('@/lib/utils/database');
+          await db.audioFiles.bulkDelete(audioIds);
+        } catch (cleanupError) {
+          log.error('[GenerationPreview] Failed to discard attempt audio:', cleanupError);
+        }
+      }
+    }
+
+    if (generatedAgentIds.length > 0) {
+      const registry = useAgentRegistry.getState();
+      generatedAgentIds.forEach((id) => registry.deleteAgent(id));
+    }
+
+    if (previousAgentSelection) {
+      const settings = useSettingsStore.getState();
+      settings.setSelectedAgentIds(previousAgentSelection.selectedAgentIds);
+      settings.setAgentSelectionIsUserSet(previousAgentSelection.isUserSet);
+    }
+
+    const store = useStageStore.getState();
+    if (stageId && store.stage?.id === stageId) store.clearStore();
   };
 
   const waitForOutlineReviewChoice = (
@@ -153,12 +238,15 @@ function GenerationPreviewContent() {
         }
         parsed.taskEngineMode = parsed.taskEngineMode === true;
         setSession(parsed);
+        if (parsed.previewPhase === 'failed') {
+          setError(parsed.failureMessage || t('generation.sceneGenerateFailed'));
+        }
       } catch (e) {
         log.error('Failed to parse generation session:', e);
       }
     }
     setSessionLoaded(true);
-  }, []);
+  }, [t]);
 
   // Abort all in-flight requests on unmount
   useEffect(() => {
@@ -451,6 +539,14 @@ function GenerationPreviewContent() {
 
       // Create stage client-side
       const stageId = nanoid(10);
+      attemptStageIdRef.current = stageId;
+      attemptGeneratedAgentIdsRef.current = [];
+      attemptAudioIdsRef.current = [];
+      const selectionSettings = useSettingsStore.getState();
+      attemptAgentSelectionRef.current = {
+        selectedAgentIds: [...selectionSettings.selectedAgentIds],
+        isUserSet: selectionSettings.agentSelectionIsUserSet,
+      };
       const stage: Stage = {
         id: stageId,
         name: extractTopicFromRequirement(currentSession.requirements.requirement),
@@ -563,21 +659,15 @@ function GenerationPreviewContent() {
                     }
                   }
                   if (done) {
-                    if (collected.length > 0) {
-                      resolve({
-                        outlines: collected,
-                        languageDirective:
-                          directive || 'Teach in the language that matches the user requirement.',
-                        // Carry any title latched from a streaming `courseTitle`
-                        // event here too — symmetric with languageDirective — so
-                        // a stream that ends without an explicit `done` event
-                        // does not silently drop a valid inferred title.
-                        courseTitle: title,
-                        taskEngineMode: false,
-                      });
-                    } else {
-                      reject(new Error(t('generation.outlineEmptyResponse')));
-                    }
+                    // A closed transport may contain only a prefix of the deck.
+                    // Without the terminal event completeness is unprovable.
+                    reject(
+                      new Error(
+                        collected.length > 0
+                          ? t('generation.outlineGenerateFailed')
+                          : t('generation.outlineEmptyResponse'),
+                      ),
+                    );
                     return;
                   }
                   return pump();
@@ -759,6 +849,7 @@ function GenerationPreviewContent() {
           // invalid/unavailable voice is applied later at the live TTS call.
           const { saveGeneratedAgents } = await import('@/lib/orchestration/registry/store');
           const savedIds = await saveGeneratedAgents(stage.id, agentData.agents);
+          attemptGeneratedAgentIdsRef.current = savedIds;
           settings.setSelectedAgentIds(savedIds);
           // Stage-derived, not a user choice — must not carry across classrooms.
           settings.setAgentSelectionIsUserSet(false);
@@ -767,9 +858,7 @@ function GenerationPreviewContent() {
           // Show card-reveal modal, continue generation once all cards are revealed
           setGeneratedAgents(agentData.agents);
           setShowAgentReveal(true);
-          await new Promise<void>((resolve) => {
-            agentRevealResolveRef.current = resolve;
-          });
+          await waitForAgentReveal(signal);
 
           agents = savedIds
             .map((id) => useAgentRegistry.getState().getAgent(id))
@@ -781,6 +870,7 @@ function GenerationPreviewContent() {
               persona: a!.persona,
             }));
         } catch (err: unknown) {
+          if (isAbortError(err)) throw err;
           log.warn('[Generation] Agent generation failed, falling back to presets:', err);
           const registry = useAgentRegistry.getState();
           const fallbackIds = settings.selectedAgentIds.filter((id) => {
@@ -824,11 +914,7 @@ function GenerationPreviewContent() {
         throw new Error(t('generation.outlineEmptyResponse'));
       }
 
-      // Store stage and outlines
-      const store = useStageStore.getState();
       stage.videoManifest = buildVideoManifestFromOutlines(outlines);
-      store.setStage(stage);
-      store.setOutlines(outlines);
 
       // Advance to slide-content step
       const contentStepIdx = activeSteps.findIndex((s) => s.id === 'slide-content');
@@ -845,9 +931,6 @@ function GenerationPreviewContent() {
         currentSession.requirements.userNickname || currentSession.requirements.userBio
           ? `Student: ${currentSession.requirements.userNickname || 'Unknown'}${currentSession.requirements.userBio ? ` — ${currentSession.requirements.userBio}` : ''}`
           : undefined;
-
-      // Generate ONLY the first scene
-      store.setGeneratingOutlines(outlines);
 
       const firstOutline = outlines[0];
 
@@ -920,7 +1003,9 @@ function GenerationPreviewContent() {
 
         let ttsFailCount = 0;
         for (const action of speechActions) {
-          const audioId = `tts_${action.id}`;
+          // Include the attempt stage id so cleanup can never collide with audio
+          // from an older classroom that reused a model-generated action id.
+          const audioId = `tts_${stage.id}_${action.id}`;
           action.audioId = audioId;
           try {
             await generateAndStoreTTS(
@@ -930,6 +1015,7 @@ function GenerationPreviewContent() {
               signal,
               FOREGROUND_SCENE_RETRY_OPTIONS,
             );
+            attemptAudioIdsRef.current.push(audioId);
           } catch (err) {
             if (isAbortError(err)) throw err;
 
@@ -943,15 +1029,16 @@ function GenerationPreviewContent() {
         }
       }
 
-      // Add scene to store and navigate
-      store.addScene(firstScene);
-      store.setCurrentSceneId(firstScene.id);
+      // The first scene and its required audio have passed. Persist a verified
+      // initial snapshot before exposing it in the store or navigating away.
+      const persistedFirstScene = await persistInitialGenerationAttempt({
+        stage,
+        firstScene,
+        outlines,
+      });
 
-      // Set remaining outlines as skeleton placeholders
-      const remaining = outlines.filter((o) => o.order !== firstScene.order);
-      store.setGeneratingOutlines(remaining);
-
-      // Store generation params for classroom to continue generation
+      // The continuation payload is also required for the classroom to finish
+      // the remaining scenes, so write it before clearing the retry session.
       sessionStorage.setItem(
         'generationParams',
         JSON.stringify({
@@ -961,19 +1048,41 @@ function GenerationPreviewContent() {
           languageDirective,
         }),
       );
-
       sessionStorage.removeItem('generationSession');
-      await store.saveToStorage();
+
+      const store = useStageStore.getState();
+      store.clearStore();
+      store.setStage(stage);
+      store.setOutlines(outlines, { persist: false });
+      store.setGeneratingOutlines(outlines);
+      store.addScene(persistedFirstScene);
+      store.setCurrentSceneId(persistedFirstScene.id);
+
+      // Set remaining outlines as skeleton placeholders
+      const remaining = outlines.filter((o) => o.order !== persistedFirstScene.order);
+      store.setGeneratingOutlines(remaining);
+      attemptStageIdRef.current = null;
+      attemptGeneratedAgentIdsRef.current = [];
+      attemptAudioIdsRef.current = [];
+      attemptAgentSelectionRef.current = null;
       router.push(`/classroom/${stage.id}`);
     } catch (err) {
       setIsOutlineStreaming(false);
       // AbortError is expected when navigating away — don't show as error
       if (isAbortError(err)) {
         log.info('[GenerationPreview] Generation aborted');
+        await discardGenerationAttempt();
         return;
       }
-      sessionStorage.removeItem('generationSession');
-      setError(err instanceof Error ? err.message : String(err));
+      await discardGenerationAttempt();
+      const failureMessage = err instanceof Error ? err.message : String(err);
+      const failedSession: GenerationSessionState = {
+        ...currentSession,
+        previewPhase: 'failed',
+        failureMessage,
+      };
+      persistSession(failedSession);
+      setError(failureMessage);
     }
   };
 
@@ -989,8 +1098,42 @@ function GenerationPreviewContent() {
     abortControllerRef.current?.abort();
     clearOutlineReviewTimer();
     outlineReviewIntentRef.current = false;
+    try {
+      if (session?.requirements.requirement) {
+        localStorage.setItem('requirementDraft', session.requirements.requirement);
+      }
+    } catch {
+      /* ignore */
+    }
     sessionStorage.removeItem('generationSession');
-    router.push('/');
+    void discardGenerationAttempt().finally(() => router.push('/'));
+  };
+
+  const handleRetryGeneration = async () => {
+    if (!session || isRetrying) return;
+
+    setIsRetrying(true);
+    abortControllerRef.current?.abort();
+    clearOutlineReviewTimer();
+    outlineReviewResolveRef.current = null;
+    outlineReviewIntentRef.current = false;
+    setStreamingOutlines(null);
+    setWebSearchSources([]);
+    setGeneratedAgents([]);
+    setShowAgentReveal(false);
+    setStatusMessage('');
+    setTruncationWarnings([]);
+
+    await discardGenerationAttempt();
+    const retrySession = createRetryGenerationSession(session, nanoid());
+    persistSession(retrySession);
+    hasStartedRef.current = true;
+
+    try {
+      await startGeneration(retrySession);
+    } finally {
+      setIsRetrying(false);
+    }
   };
 
   // Triggered when the user clicks the streaming outline card mid-stream.
@@ -1407,11 +1550,29 @@ function GenerationPreviewContent() {
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="w-full max-w-xs"
+                className="w-full max-w-md"
               >
-                <Button size="lg" variant="outline" className="w-full h-12" onClick={goBackToHome}>
-                  {t('generation.goBackAndRetry')}
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    size="lg"
+                    className="w-full h-12"
+                    onClick={handleRetryGeneration}
+                    disabled={isRetrying}
+                    data-testid="retry-generation"
+                  >
+                    <RefreshCw className={cn('size-4 mr-2', isRetrying && 'animate-spin')} />
+                    {t('generation.retryScene')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    className="w-full h-12"
+                    onClick={goBackToHome}
+                  >
+                    <ArrowLeft className="size-4 mr-2" />
+                    {t('generation.backToRequirements')}
+                  </Button>
+                </div>
               </motion.div>
             ) : isOutlineReady ? null : !isComplete ? (
               <motion.div

@@ -98,7 +98,7 @@ interface StageState {
   setMode: (mode: StageMode) => void;
   setToolbarState: (state: ToolbarState) => void;
   setGeneratingOutlines: (outlines: SceneOutline[]) => void;
-  setOutlines: (outlines: SceneOutline[]) => void;
+  setOutlines: (outlines: SceneOutline[], options?: { persist?: boolean }) => void;
   setGenerationComplete: (complete: boolean) => void;
   /** Mark generation complete iff every outline has a scene and none failed. */
   markGenerationCompleteIfDone: () => void;
@@ -276,22 +276,28 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
 
   setGeneratingOutlines: (generatingOutlines) => set({ generatingOutlines }),
 
-  setOutlines: (outlines) => {
+  setOutlines: (outlines, options) => {
     set({ outlines });
+    if (options?.persist === false) return;
+
     // Persist outlines to IndexedDB. Carry generationComplete so writing
     // outlines never clobbers a previously-recorded completion flag.
     const stageId = get().stage?.id;
     if (stageId) {
       const generationComplete = get().generationComplete;
-      import('@/lib/utils/database').then(({ db }) => {
-        db.stageOutlines.put({
-          stageId,
-          outlines,
-          generationComplete,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
+      void import('@/lib/utils/database')
+        .then(({ db }) =>
+          db.stageOutlines.put({
+            stageId,
+            outlines,
+            generationComplete,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }),
+        )
+        .catch((error) => {
+          log.error('Failed to save stage outlines:', error);
         });
-      });
     }
   },
 

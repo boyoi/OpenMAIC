@@ -30,6 +30,7 @@ import {
   generateTTSForClassroom,
 } from '@/lib/server/classroom-media-generation';
 import { withGenerationRetry } from '@/lib/generation/generation-retry';
+import { getDegradedSceneContentIssue } from '@/lib/generation/scene-quality';
 import { buildVideoManifestFromOutlines } from '@/lib/media/video-manifest';
 import type { UserRequirements } from '@/lib/types/generation';
 import type { Scene, Stage } from '@/lib/types/stage';
@@ -452,12 +453,20 @@ export async function generateClassroom(
         }),
       {
         label: `scene ${index + 1}/${outlines.length} content`,
-        shouldRetryResult: (result) => result === null,
+        shouldRetryResult: (result) =>
+          result === null || getDegradedSceneContentIssue(result) !== null,
+        retryAbortErrors: true,
         onRetry: (event) => reportSceneRetry('content', event),
       },
     );
     if (!content) {
       throw new Error(`Scene content generation failed: ${safeOutline.title}`);
+    }
+    const degradedIssue = getDegradedSceneContentIssue(content);
+    if (degradedIssue !== null) {
+      throw new Error(
+        `Scene content quality validation failed after retries: ${safeOutline.title}: ${degradedIssue}`,
+      );
     }
 
     const actions = await withGenerationRetry(
@@ -468,6 +477,7 @@ export async function generateClassroom(
         }),
       {
         label: `scene ${index + 1}/${outlines.length} actions`,
+        retryAbortErrors: true,
         onRetry: (event) => reportSceneRetry('actions', event),
       },
     );

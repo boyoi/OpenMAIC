@@ -81,6 +81,48 @@ describe('generation retry helper', () => {
     expect(isAbortError(abort)).toBe(true);
   });
 
+  it('retries provider-side AbortError values when explicitly enabled', async () => {
+    const abort = Object.assign(new Error('LLM stream was aborted'), { name: 'AbortError' });
+    const sleep = vi.fn(async () => undefined);
+    const operation = vi.fn().mockRejectedValueOnce(abort).mockResolvedValueOnce('scene-ok');
+
+    await expect(
+      withGenerationRetry(operation, {
+        label: 'scene content',
+        maxRetries: 1,
+        retryAbortErrors: true,
+        sleep,
+        random: () => 0,
+      }),
+    ).resolves.toBe('scene-ok');
+
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(1000, undefined);
+  });
+
+  it('does not retry AbortError when the caller signal was cancelled', async () => {
+    const controller = new AbortController();
+    const abort = Object.assign(new Error('Aborted by user'), { name: 'AbortError' });
+    const sleep = vi.fn(async () => undefined);
+    const operation = vi.fn(async () => {
+      controller.abort();
+      throw abort;
+    });
+
+    await expect(
+      withGenerationRetry(operation, {
+        label: 'scene content',
+        signal: controller.signal,
+        maxRetries: 1,
+        retryAbortErrors: true,
+        sleep,
+      }),
+    ).rejects.toBe(abort);
+
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it('does not call the operation when its signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort();

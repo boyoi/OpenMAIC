@@ -27,6 +27,7 @@ import {
   withGenerationRetry,
   type GenerationRetryOptions,
 } from '@/lib/generation/generation-retry';
+import { getDegradedSceneContentIssue } from '@/lib/generation/scene-quality';
 
 const log = createLogger('SceneGenerator');
 const STREAMED_HTTP_STATUS_FIELD = '_httpStatus';
@@ -136,7 +137,7 @@ export async function fetchSceneContent(
   retryOptions?: ClientRetryOptions<SceneContentResult>,
 ): Promise<SceneContentResult> {
   try {
-    return await withGenerationRetry(
+    const result = await withGenerationRetry(
       async () => {
         const response = await fetch('/api/generate/scene-content', {
           method: 'POST',
@@ -155,11 +156,24 @@ export async function fetchSceneContent(
       },
       {
         label: `scene content "${params.outline.title}"`,
-        shouldRetryResult: (result) => !result.success || !result.content,
+        shouldRetryResult: (result) =>
+          !result.success ||
+          !result.content ||
+          getDegradedSceneContentIssue(result.content) !== null,
         ...retryOptions,
         signal,
       },
     );
+
+    const degradedIssue = getDegradedSceneContentIssue(result.content);
+    if (result.success && degradedIssue !== null) {
+      return {
+        success: false,
+        error: `Scene content quality validation failed after retries for "${params.outline.title}": ${degradedIssue}`,
+      };
+    }
+
+    return result;
   } catch (error) {
     if (isAbortError(error)) throw error;
     return { success: false, error: messageFromError(error, 'Content generation failed') };

@@ -122,6 +122,74 @@ describe('browser scene generation retry wrappers', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  it('retries degraded scene content before returning a usable candidate', async () => {
+    const { fetchSceneContent } = await import('@/lib/hooks/use-scene-generator');
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          success: true,
+          content: {
+            elements: [],
+            quality: { status: 'degraded', issues: ['model response was incomplete'] },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          success: true,
+          content: { elements: [], quality: { status: 'candidate', issues: [] } },
+        }),
+      );
+
+    const result = await fetchSceneContent(
+      {
+        outline,
+        allOutlines: [outline],
+        stageId: 'stage-1',
+        stageInfo: { name: 'Retry Course' },
+      },
+      undefined,
+      retryOptions,
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      content: { quality: { status: 'candidate' } },
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns an explicit failure when degraded scene content exhausts retries', async () => {
+    const { fetchSceneContent } = await import('@/lib/hooks/use-scene-generator');
+    mockFetch.mockResolvedValue(
+      jsonResponse(200, {
+        success: true,
+        content: {
+          elements: [],
+          quality: { status: 'degraded', issues: ['model response was incomplete'] },
+        },
+      }),
+    );
+
+    const result = await fetchSceneContent(
+      {
+        outline,
+        allOutlines: [outline],
+        stageId: 'stage-1',
+        stageInfo: { name: 'Retry Course' },
+      },
+      undefined,
+      retryOptions,
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error:
+        'Scene content quality validation failed after retries for "Retry Scene": model response was incomplete',
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('does not retry permanent scene action HTTP failures', async () => {
     const { fetchSceneActions } = await import('@/lib/hooks/use-scene-generator');
     mockFetch.mockResolvedValue(jsonResponse(401, { error: 'unauthorized' }));

@@ -17,7 +17,9 @@ export interface GenerationSessionState {
   imageMapping?: ImageMapping;
   sceneOutlines?: SceneOutline[] | null;
   currentStep: 'generating' | 'complete';
-  previewPhase?: 'preparing' | 'outline-ready' | 'review' | 'generating-content';
+  previewPhase?: 'preparing' | 'outline-ready' | 'review' | 'generating-content' | 'failed';
+  /** Persisted so a failed page refresh remains stopped and explains what happened. */
+  failureMessage?: string;
   // PDF deferred parsing fields
   pdfStorageKey?: string;
   pdfFileName?: string;

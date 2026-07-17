@@ -15,6 +15,8 @@ export interface GenerationRetryOptions<T> {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
   shouldRetryResult?: (result: T) => boolean;
+  /** Retry provider-side stream aborts when the caller's own signal is still active. */
+  retryAbortErrors?: boolean;
   onRetry?: (event: GenerationRetryEvent) => Promise<void> | void;
 }
 
@@ -207,13 +209,15 @@ export async function withGenerationRetry<T>(
       throwIfAborted(options.signal);
       await sleep(nextDelayMs, options.signal);
     } catch (error) {
-      if (isAbortError(error)) {
+      const abortError = isAbortError(error);
+      if (abortError && (!options.retryAbortErrors || options.signal?.aborted)) {
         throw error;
       }
 
       throwIfAborted(options.signal);
 
-      if (attempt >= maxAttempts || !isRetryableGenerationError(error)) {
+      const retryable = abortError || isRetryableGenerationError(error);
+      if (attempt >= maxAttempts || !retryable) {
         throw error;
       }
 

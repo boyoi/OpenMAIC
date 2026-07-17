@@ -8,6 +8,7 @@ export class GenerationPreviewPage {
   readonly editorTitle: Locator;
   readonly alwaysReviewCheckbox: Locator;
   readonly confirmOutlinesButton: Locator;
+  readonly regenerateButton: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -28,6 +29,7 @@ export class GenerationPreviewPage {
     this.confirmOutlinesButton = page.getByRole('button', {
       name: /confirm and generate course|确认并生成课程|確認並生成課程|確認してコースを生成|подтвердить и сгенерировать курс|تأكيد وتوليد المقرر/i,
     });
+    this.regenerateButton = page.getByTestId('retry-generation');
   }
 
   async goto() {

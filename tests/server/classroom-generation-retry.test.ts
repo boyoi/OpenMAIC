@@ -160,6 +160,46 @@ describe('classroom scene generation retries', () => {
     );
   });
 
+  it('retries degraded scene content before creating the scene', async () => {
+    mocks.generateSceneContent
+      .mockResolvedValueOnce({
+        ...slideContent,
+        quality: { status: 'degraded', issues: ['model response was incomplete'] },
+      })
+      .mockResolvedValueOnce(slideContent);
+
+    const { result, progress } = await generateWithProgress();
+
+    expect(result.scenesCount).toBe(1);
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(2);
+    expect(mocks.createSceneWithActions).toHaveBeenCalledTimes(1);
+    expect(progress.some((event) => event.message.includes('Retrying scene 1/1 content'))).toBe(
+      true,
+    );
+  });
+
+  it('retries provider-side stream aborts for scene content and actions', async () => {
+    const streamAbort = Object.assign(new Error('LLM stream was aborted'), {
+      name: 'AbortError',
+    });
+    mocks.generateSceneContent
+      .mockRejectedValueOnce(streamAbort)
+      .mockResolvedValueOnce(slideContent);
+    mocks.generateSceneActions.mockRejectedValueOnce(streamAbort).mockResolvedValueOnce([]);
+
+    const { result, progress } = await generateWithProgress();
+
+    expect(result.scenesCount).toBe(1);
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(2);
+    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(2);
+    expect(progress.some((event) => event.message.includes('Retrying scene 1/1 content'))).toBe(
+      true,
+    );
+    expect(progress.some((event) => event.message.includes('Retrying scene 1/1 actions'))).toBe(
+      true,
+    );
+  });
+
   it('forwards classroom thinking config to scene retry LLM calls', async () => {
     const thinkingConfig = { enabled: true, effort: 'high' };
     mocks.resolveModel.mockResolvedValue({
@@ -248,16 +288,32 @@ describe('classroom scene generation retries', () => {
     expect(mocks.persistClassroom).not.toHaveBeenCalled();
   });
 
-  it('does not persist a classroom containing degraded fallback slides', async () => {
+  it('fails before scene creation when degraded content exhausts retries', async () => {
+    vi.useFakeTimers();
     mocks.generateSceneContent.mockResolvedValue({
       ...slideContent,
       quality: { status: 'degraded', issues: ['model response was incomplete'] },
     });
 
-    await expect(generateWithProgress()).rejects.toThrow(
-      'Classroom quality validation failed: Retry Basics: model response was incomplete',
-    );
+    try {
+      const settled = generateWithProgress().then(
+        () => ({ error: undefined }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.runAllTimersAsync();
+      const { error } = await settled;
 
+      expect(error).toEqual(
+        new Error(
+          'Scene content quality validation failed after retries: Retry Basics: model response was incomplete',
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(6);
+    expect(mocks.createSceneWithActions).not.toHaveBeenCalled();
     expect(mocks.persistClassroom).not.toHaveBeenCalled();
   });
 
