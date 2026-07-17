@@ -26,6 +26,8 @@ import {
 } from './inline-assets';
 import { createProxiedFetch } from './proxied-fetch';
 import type { SceneContent } from '@/lib/types/stage';
+import { useMediaGenerationStore } from '@/lib/store/media-generation';
+import { getExportAvailability } from './export-availability';
 
 export async function inlineSceneContent(
   content: SceneContent,
@@ -45,8 +47,19 @@ export function useExportClassroom() {
   const { t } = useI18n();
 
   const exportClassroomZip = useCallback(async () => {
-    const { stage, scenes } = useStageStore.getState();
+    const stageState = useStageStore.getState();
+    const { stage, scenes } = stageState;
     if (!stage?.id || scenes.length === 0) return;
+
+    const availability = getExportAvailability({
+      scenes,
+      generatingOutlineCount: stageState.generatingOutlines.length,
+      failedOutlineCount: stageState.failedOutlines.length,
+      generationStatus: stageState.generationStatus,
+      mediaTaskStatuses: Object.values(useMediaGenerationStore.getState().tasks)
+        .filter((task) => task.stageId === stage.id)
+        .map((task) => task.status),
+    });
 
     setExporting(true);
     const toastId = toast.loading(t('export.exporting'));
@@ -230,6 +243,7 @@ export function useExportClassroom() {
         });
       }
       toast.success(t('export.exportSuccess'), { id: toastId });
+      if (availability.isPartial) toast.warning(t('export.partialWarning'));
     } catch (error) {
       log.error('Classroom ZIP export failed:', error);
       toast.error(t('export.exportFailed'), { id: toastId });

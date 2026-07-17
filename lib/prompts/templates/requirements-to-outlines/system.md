@@ -73,6 +73,9 @@ Produce a **`courseTitle`** (required): a concise, human-readable name for the *
 - **Clear Purpose**: Each scene has a clear teaching function
 - **Logical Flow**: Scenes form a natural teaching progression
 - **Experience Design**: Consider learning experience and emotional response from the student's perspective
+- **One Audience Question Per Slide**: Each slide should answer one clear question or support one concrete decision
+- **Practical Evidence**: Prefer real examples, workflows, code, criteria, data, and observable outputs over generic topic lists
+- **Visual Semantics First**: Decide what relationship the audience needs to see before deciding how the page should look
 
 ---
 
@@ -92,11 +95,38 @@ When user requirements don't specify, use these defaults:
 
 ## Special Element Design Guidelines
 
+### Slide Semantic Planning
+
+Every scene with `type: "slide"` must include:
+
+- `slideIntent`: one of `cover`, `concept`, `process`, `comparison`, `timeline`, `architecture`, `data`, `code`, `worked-example`, `case-study`, `decision`, `summary`
+- `visualBrief`: one concise, content-specific sentence describing the useful visual artifact and relationship to show
+
+Good `visualBrief` examples:
+
+- "Show the API request moving through authentication, tool routing, model execution, and the final response; mark the failure boundary."
+- "Compare local and hosted deployment across cost, latency, privacy, and maintenance, then highlight the selection rule."
+- "Place the 10-line Python call beside the returned JSON and annotate the two parameters a beginner must change."
+
+Bad `visualBrief` examples:
+
+- "Use a modern professional design"
+- "Make it beautiful and visual"
+- "Put the three key points in cards"
+
+Rules:
+
+- Choose intent from meaning, not from the number of key points
+- Cards are only appropriate for truly parallel peer categories; do not use them for process, timeline, architecture, data, code, or decisions
+- Across slide scenes, vary the visual structure. Adjacent slides should not request the same composition when another semantically correct form exists
+- A content slide should normally name at least one concrete artifact in `visualBrief`: diagram, flow, comparison, timeline, chart, table, code, formula, decision path, annotated image, or worked example
+- `keyPoints` must contain the actual facts/steps/dimensions/data needed to build that artifact; never use placeholder labels such as "Point 1" or "More details"
+
 ### Chart Elements
 
 When content needs visualization, specify chart requirements in keyPoints:
 
-- **Chart Types**: bar, line, pie, radar
+- **Reliable Chart Types**: bar (vertical), column (horizontal), line, area, pie, ring
 - **Data Description**: Briefly describe data content and display purpose
 
 Example keyPoints:
@@ -261,6 +291,8 @@ Rules:
       "title": "Introduction",
       "description": "Welcome students and introduce the core concept.",
       "keyPoints": ["Context", "Agenda", "Goals"],
+      "slideIntent": "cover",
+      "visualBrief": "Introduce the topic with one clear value proposition and a compact learning route.",
       "order": 1
     },
     {
@@ -311,6 +343,8 @@ Rules:
 {{#if mediaEnabled}}
 | mediaGenerations  | MediaGenerationRequest[] | ❌       | AI-generated media requests when generated media would enhance a slide scene                     |
 {{/if}}
+| slideIntent       | string                   | ✅ (for slide) | Semantic page purpose: cover/concept/process/comparison/timeline/architecture/data/code/worked-example/case-study/decision/summary |
+| visualBrief       | string                   | ✅ (for slide) | Content-specific visual artifact and relationship to show                                        |
 | quizConfig        | object                   | ❌       | Required for quiz type, contains questionCount/difficulty/questionTypes                          |
 | interactiveConfig | object                   | ❌ (deprecated) | Legacy: use widgetType + widgetOutline instead                                                                                       |
 | widgetType        | string                   | ✅ (for interactive) | Widget type: "simulation", "diagram", "code", "game", "visualization3d"                                                 |
@@ -384,3 +418,4 @@ Omit `scenarioRoleplay` and `scenarioBrief` entirely for ordinary build-an-artef
 9. **Language**: Infer from the user's requirement text and context. Output all scene content in the inferred language.
 10. Regardless of information completeness, always output conforming JSON - do not ask questions or request more information
 11. **No teacher identity on slides**: Scene titles and keyPoints must be neutral and topic-focused. Never include the teacher's name or role (e.g., avoid "Teacher Wang's Tips", "Teacher's Wishes"). Use generic labels like "Tips", "Summary", "Key Takeaways" instead.
+12. Every `slide` scene includes a valid `slideIntent` and a concrete `visualBrief`; these fields describe meaning and visual evidence, not generic styling.

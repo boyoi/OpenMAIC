@@ -31,6 +31,7 @@ import type {
   UserRequirements,
   PdfImage,
   SceneOutline,
+  SlideIntent,
   ImageMapping,
 } from '@/lib/types/generation';
 import { apiError } from '@/lib/server/api-response';
@@ -38,6 +39,21 @@ import { createLogger } from '@/lib/logger';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 const log = createLogger('Outlines Stream');
+
+const SLIDE_INTENTS = new Set<SlideIntent>([
+  'cover',
+  'concept',
+  'process',
+  'comparison',
+  'timeline',
+  'architecture',
+  'data',
+  'code',
+  'worked-example',
+  'case-study',
+  'decision',
+  'summary',
+]);
 
 export const maxDuration = 300;
 
@@ -263,6 +279,25 @@ function sanitizeNonTaskEngineOutline(outline: SceneOutline): SceneOutline {
       ? `${outline.description} Present this as a process or structure diagram.`
       : 'Present this topic as a process or structure diagram.',
     widgetOutline,
+  };
+}
+
+function normalizeSlidePlanning(outline: SceneOutline): SceneOutline {
+  if (outline.type !== 'slide') {
+    return { ...outline, slideIntent: undefined, visualBrief: undefined };
+  }
+
+  const rawIntent = (outline as { slideIntent?: unknown }).slideIntent;
+  const rawVisualBrief = (outline as { visualBrief?: unknown }).visualBrief;
+  return {
+    ...outline,
+    slideIntent: SLIDE_INTENTS.has(rawIntent as SlideIntent)
+      ? (rawIntent as SlideIntent)
+      : undefined,
+    visualBrief:
+      typeof rawVisualBrief === 'string'
+        ? rawVisualBrief.trim().slice(0, 500) || undefined
+        : undefined,
   };
 }
 
@@ -520,7 +555,10 @@ export async function POST(req: NextRequest) {
                   const normalized = taskEngineMode
                     ? normalizeTaskEngineOutline(enrichedBase, requirements.requirement)
                     : sanitizeNonTaskEngineOutline(enrichedBase);
-                  const enriched = ensureUniqueOutlineId(normalized, usedOutlineIds);
+                  const enriched = ensureUniqueOutlineId(
+                    normalizeSlidePlanning(normalized),
+                    usedOutlineIds,
+                  );
                   parsedOutlines.push(enriched);
 
                   const event = JSON.stringify({

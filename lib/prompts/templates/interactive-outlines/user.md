@@ -58,6 +58,8 @@ Every interactive scene MUST include:
 
 Interactive scenes without these fields are INVALID.
 
+Every slide scene MUST include `slideIntent` and `visualBrief`. The brief must specify the useful visual artifact and relationship to show, not generic styling or an automatic card grid.
+
 ## Widget Selection Guide
 
 Choose widgets based on the content:

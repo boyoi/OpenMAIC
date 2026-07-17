@@ -42,6 +42,7 @@ function buildSlidePrompt(flags: {
     canvas_height: 562.5,
     teacherContext: '',
     languageDirective: 'Teach in English.',
+    slideDesignBrief: 'Semantic intent: process\nSelected layout variant: horizontal-stage-gates',
     imageElementEnabled: flags.imageElementEnabled ?? false,
     generatedImageEnabled,
     generatedVideoEnabled,
@@ -73,6 +74,8 @@ describe('requirements-to-outlines media prompt conditions', () => {
     expect(text).not.toContain('suggestedImageIds');
     expect(text).not.toContain('gen_img_');
     expect(text).not.toContain('gen_vid_');
+    expect(text).toContain('slideIntent');
+    expect(text).toContain('visualBrief');
     expect(text).not.toContain('{{');
   });
 
@@ -83,6 +86,8 @@ describe('requirements-to-outlines media prompt conditions', () => {
     expect(text).toContain('mediaGenerations');
     expect(text).toContain('gen_img_1');
     expect(text).not.toContain('gen_vid_');
+    expect(text).toContain('slideIntent');
+    expect(text).toContain('visualBrief');
     expect(text).not.toContain('{{');
   });
 
@@ -122,6 +127,8 @@ describe('interactive-outlines media prompt conditions', () => {
     expect(text).not.toContain('mediaGenerations');
     expect(text).not.toContain('gen_img_');
     expect(text).not.toContain('gen_vid_');
+    expect(text).toContain('slideIntent');
+    expect(text).toContain('visualBrief');
     expect(text).not.toContain('{{');
   });
 

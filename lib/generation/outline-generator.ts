@@ -8,6 +8,7 @@ import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/genera
 import type {
   UserRequirements,
   SceneOutline,
+  SlideIntent,
   PdfImage,
   ImageMapping,
 } from '@/lib/types/generation';
@@ -18,6 +19,21 @@ import { uniquifyMediaElementIds } from './scene-builder';
 import type { AICallFn, GenerationResult, GenerationCallbacks } from './pipeline-types';
 import { createLogger } from '@/lib/logger';
 const log = createLogger('Generation');
+
+const SLIDE_INTENTS = new Set<SlideIntent>([
+  'cover',
+  'concept',
+  'process',
+  'comparison',
+  'timeline',
+  'architecture',
+  'data',
+  'code',
+  'worked-example',
+  'case-study',
+  'decision',
+  'summary',
+]);
 
 /**
  * Used when the outline stage fails to produce an explicit directive (LLM
@@ -152,11 +168,23 @@ export async function generateSceneOutlinesFromRequirements(
     }
 
     // Ensure IDs and order
-    const enriched = rawOutlines.map((outline, index) => ({
-      ...outline,
-      id: outline.id || nanoid(),
-      order: index + 1,
-    }));
+    const enriched = rawOutlines.map((outline, index) => {
+      const rawIntent = (outline as { slideIntent?: unknown }).slideIntent;
+      const rawVisualBrief = (outline as { visualBrief?: unknown }).visualBrief;
+      return {
+        ...outline,
+        id: outline.id || nanoid(),
+        order: index + 1,
+        slideIntent:
+          outline.type === 'slide' && SLIDE_INTENTS.has(rawIntent as SlideIntent)
+            ? (rawIntent as SlideIntent)
+            : undefined,
+        visualBrief:
+          outline.type === 'slide' && typeof rawVisualBrief === 'string'
+            ? rawVisualBrief.trim().slice(0, 500) || undefined
+            : undefined,
+      };
+    });
 
     // Replace sequential gen_img_N/gen_vid_N with globally unique IDs
     const result = uniquifyMediaElementIds(enriched);

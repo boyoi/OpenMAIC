@@ -35,6 +35,7 @@ export function AccessCodeGuard({ children }: { children: ReactNode }) {
   }, []);
 
   const needsAuth = !status.loading && status.enabled && !status.authenticated;
+  const canRenderChildren = !status.loading && (!status.enabled || status.authenticated);
 
   return (
     <>
@@ -44,7 +45,7 @@ export function AccessCodeGuard({ children }: { children: ReactNode }) {
           onSuccess={() => setStatus((s) => ({ ...s, authenticated: true }))}
         />
       )}
-      {children}
+      {canRenderChildren ? children : null}
     </>
   );
 }

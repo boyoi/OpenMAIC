@@ -97,12 +97,13 @@ describe('task-engine outlines prompt', () => {
     expect(text).toMatch(/first scene must be a `?slide`?/i);
     expect(text).toMatch(/course briefing|task overview/i);
     expect(text).toMatch(/stable PPT-style slide/i);
-    expect(text).toMatch(/exactly 3 stable information cards|3 stable information cards/i);
+    expect(text).toMatch(/task briefing map|task boundary map|input-process-checkpoint/i);
+    expect(text).toMatch(/do not need to become three equal cards/i);
     expect(text).toMatch(/Task Purpose/i);
     expect(text).toMatch(/Key Risk/i);
     expect(text).toMatch(/Task Boundary/i);
     expect(text).toMatch(/4-6 macro training stages/i);
-    expect(text).toMatch(/compact GO\/STOP completion standard/i);
+    expect(text).toMatch(/compact GO\/STOP (completion standard|decision area|standard)/i);
     expect(text).toMatch(/safety red line/i);
     expect(text).toMatch(/not a floating callout|not be a floating callout/i);
     expect(text).toMatch(/more than 6 training steps/i);

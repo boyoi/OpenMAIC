@@ -149,6 +149,21 @@ export function useAgentRuntime(opts: UseAgentRuntimeOptions) {
   // (the route's ReadableStream.cancel() calls agent.abort()).
   const abortRef = useRef<AbortController | null>(null);
 
+  // Hard stop used when the entire editor runtime is going away. Invalidate the
+  // run before aborting so a buffered late SSE event cannot apply a tool patch
+  // after Pro mode has released its cross-tab edit lock.
+  const invalidateActiveRun = useCallback(() => {
+    const active = abortRef.current;
+    abortRef.current = null;
+    active?.abort();
+  }, []);
+  useEffect(() => invalidateActiveRun, [invalidateActiveRun]);
+
+  const cancelAndInvalidate = useCallback(() => {
+    invalidateActiveRun();
+    setIsRunning(false);
+  }, [invalidateActiveRun]);
+
   const clearThread = useCallback(() => {
     // Discard any in-flight run first — otherwise its late SSE events still pass
     // isCurrent() and could rewrite the cleared thread or apply tool patches to
@@ -458,5 +473,11 @@ export function useAgentRuntime(opts: UseAgentRuntimeOptions) {
     convertMessage: (m) => m,
   });
 
-  return { runtime, clearThread, hasMessages: messages.length > 0, isRunning };
+  return {
+    runtime,
+    clearThread,
+    cancelAndInvalidate,
+    hasMessages: messages.length > 0,
+    isRunning,
+  };
 }

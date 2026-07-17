@@ -46,6 +46,7 @@
     "exportFailed": "Export failed",
     "classroomZip": "Export Classroom ZIP",
     "classroomZipDesc": "Course structure + media files",
+    "partialWarning": "Generation is not complete. This export only includes content completed so far; unfinished scenes or media are omitted.",
     "inlinePartial": "{{count}} external asset(s) couldn't be bundled; the course may not display correctly offline."
   },
   "import": {
@@ -158,7 +159,23 @@
     "exitFullscreen": "Exit Fullscreen",
     "editCourse": "Edit course",
     "doneEditing": "Done editing",
-    "proModeDisabledHint": "Editing isn't available on this page — open a course slide to edit with Pro mode."
+    "proModeDisabledHint": "Editing isn't available on this page — open a course slide to edit with Pro mode.",
+    "feedback": {
+      "button": "Report issue",
+      "buttonTitle": "Report a problem on this page to AI",
+      "title": "Report a page issue",
+      "descriptionInteractive": "Describe what is not working. Submitting opens Pro mode so AI can read runtime errors and change only the necessary code.",
+      "descriptionSlide": "Describe the content or layout problem. AI will regenerate this slide, so page details and narration may change.",
+      "fieldLabel": "What is wrong?",
+      "placeholder": "For example: Start does nothing; the second line is covered…",
+      "runtimeErrors": "{{count}} runtime error(s) detected; they will be included for AI.",
+      "submit": "Ask AI to fix",
+      "entering": "Opening AI repair…",
+      "error": "The repair could not be started. Please try again.",
+      "empty": "Describe the problem first.",
+      "agentPromptInteractive": "Page issue report: {{report}}\nFix the current interactive page now. First read the current page content and runtime errors. Also inspect the relevant controls' selectors, event bindings, initialization, disabled state, and overlays because an unresponsive control may not throw an error. Make only the necessary targeted HTML/JavaScript edits and preserve all other content and interactions; do not only explain. After applying the fix, briefly state what changed and ask me to click again to verify.",
+      "agentPromptSlide": "Page issue report: {{report}}\nI authorize you to regenerate the current slide based on this report. First read the current slide, then directly regenerate its content and narration to solve the problem; do not only explain. Briefly state what changed and remind me to review the page."
+    }
   },
   "edit": {
     "proMode": "Pro",

@@ -175,6 +175,13 @@ Interactive 3D scenes using Three.js for immersive learning experiences.
 3. **Transition scenes (slides)**: Concept explanations between widgets
 4. **Closing scenes (slides)**: Summary, key takeaways, next steps
 
+Every slide scene must also include semantic visual planning:
+
+- `slideIntent`: `cover`, `concept`, `process`, `comparison`, `timeline`, `architecture`, `data`, `code`, `worked-example`, `case-study`, `decision`, or `summary`
+- `visualBrief`: one content-specific sentence describing the useful diagram, comparison, worked example, data view, code path, decision aid, or synthesis to show
+
+Do not use generic styling language in `visualBrief`, and do not automatically request cards. Transition slides should visualize the relationship between the widget just completed and the next concept.
+
 ## Widget Type Preferences (Adjust Based on Course Length)
 
 For **longer courses (10+ scenes)**, consider:
@@ -281,6 +288,8 @@ Rules:
       "title": "Introduction to Projectile Motion",
       "description": "Introduce the concept and learning objectives",
       "keyPoints": ["What is projectile motion", "Real-world examples", "Key variables"],
+      "slideIntent": "cover",
+      "visualBrief": "Show the real-world trajectory, the three variables learners will control, and the exploration route.",
       "order": 1
     },
     {
@@ -313,6 +322,7 @@ Rules:
 4. **Interactive focus**: Prefer interactive widgets for hands-on learning.
 5. **Widget variety**: Use different widget types throughout the course when appropriate.
 6. **Flow**: Slides should introduce concepts, widgets should let students explore.
+7. **Slide semantics**: Every slide scene includes a valid `slideIntent` and concrete `visualBrief`; adjacent slide scenes should not request the same composition by default.
 7. **Language**: Apply the Language Inference decision rules above when producing `languageDirective`, and author all scene content in the inferred language.
 8. **REQUIRED for interactive scenes**: Every scene with `type: "interactive"` MUST include both `widgetType` AND `widgetOutline` fields.
 9. **Game quality**: Game widgets should be INTERACTIVE and FUN, not boring quizzes.

@@ -67,6 +67,20 @@ export const PROVIDERS: Record<ProviderId, ProviderConfig> = {
     icon: '/logos/openai.svg',
     models: [
       {
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        capabilities: {
+          streaming: true,
+          tools: true,
+          vision: true,
+          thinking: {
+            toggleable: false,
+            budgetAdjustable: true,
+            defaultEnabled: true,
+          },
+        },
+      },
+      {
         id: 'gpt-5.5',
         name: 'GPT-5.5',
         contextWindow: 1050000,
@@ -1244,6 +1258,18 @@ function getCompatThinkingBodyParams(
   const budget = pickThinkingBudget(capability, config);
 
   switch (capability.requestAdapter) {
+    case 'openai': {
+      const effort =
+        config.effort && capability.effortValues?.includes(config.effort)
+          ? config.effort
+          : mode === 'enabled'
+            ? capability.defaultEffort
+            : undefined;
+      // The installed OpenAI SDK schema does not yet accept `max`, so inject
+      // only that value at the fetch layer. Supported values use providerOptions.
+      return effort === 'max' ? { reasoning_effort: effort } : undefined;
+    }
+
     case 'kimi':
     case 'xiaomi':
       if (mode === 'disabled') return { thinking: { type: 'disabled' } };
@@ -1444,11 +1470,16 @@ export function getModel(config: ModelConfig): ModelWithInfo {
         baseURL: effectiveBaseUrl,
       };
 
-      // For OpenAI-compatible providers (not native OpenAI), add a fetch
-      // wrapper that injects vendor-specific thinking params into the HTTP
-      // body. The thinking config is read from AsyncLocalStorage, set by
-      // callLLM / streamLLM at call time.
-      if (config.providerId !== 'openai') {
+      const thinkingCapability = getCatalogThinkingCapability(config.providerId, config.modelId);
+      const needsRawOpenAIMaxEffort =
+        config.providerId === 'openai' &&
+        thinkingCapability?.requestAdapter === 'openai' &&
+        thinkingCapability.effortValues?.includes('max');
+
+      // OpenAI-compatible providers use a fetch wrapper for vendor-specific
+      // thinking params. Native OpenAI models whose newest effort values are
+      // not yet accepted by the installed SDK use the same narrow path.
+      if (config.providerId !== 'openai' || needsRawOpenAIMaxEffort) {
         const providerId = config.providerId;
         const compatFetch = async (url: RequestInfo | URL, init?: RequestInit) => {
           // Read thinking config from globalThis (set by thinking-context.ts)
@@ -1458,7 +1489,7 @@ export function getModel(config: ModelConfig): ModelWithInfo {
           const thinkingFromContext = thinkingCtx?.getStore?.() as ThinkingConfig | undefined;
           const thinking =
             thinkingFromContext ??
-            (providerId === 'lemonade'
+            (providerId === 'lemonade' || needsRawOpenAIMaxEffort
               ? getDefaultThinkingConfig(getCatalogThinkingCapability(providerId, config.modelId))
               : undefined);
           if (thinking && init?.body && typeof init.body === 'string') {
@@ -1477,6 +1508,10 @@ export function getModel(config: ModelConfig): ModelWithInfo {
             }
           }
           const response = await globalThis.fetch(url, init);
+
+          if (providerId === 'openai') {
+            return response;
+          }
 
           // Recover reasoning that @ai-sdk/openai's chat schema drops: rewrite
           // streamed `reasoning_content` deltas into an inline <think> block

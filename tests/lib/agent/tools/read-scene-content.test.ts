@@ -170,4 +170,21 @@ describe('read_scene_content tool', () => {
     expect((res as { isError?: boolean }).isError).toBeFalsy();
     expect(res.details.type).toBe('quiz');
   });
+
+  it('includes only the current scene runtime errors in model-visible text', async () => {
+    const sceneCtx = ctxFor('s1');
+    sceneCtx.runtimeErrors = [
+      '[error] BUTTON-HANDLER-SENTINEL is not defined',
+      '[unhandledrejection] INIT-SENTINEL failed',
+    ];
+    const tool = makeReadSceneContentTool({
+      getSceneContext: (id) => (id === 's1' ? sceneCtx : undefined),
+    });
+    const res = await tool.execute('call-errors', { sceneId: 's1' });
+
+    const text = res.content.map((p) => (p as { text?: string }).text ?? '').join('\n');
+    expect(text).toContain('Runtime errors this page reported');
+    expect(text).toContain('BUTTON-HANDLER-SENTINEL');
+    expect(text).toContain('INIT-SENTINEL');
+  });
 });

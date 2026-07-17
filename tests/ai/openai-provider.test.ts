@@ -93,6 +93,25 @@ describe('OpenAI provider defaults', () => {
     });
   });
 
+  it('includes GPT-5.6 Sol with max reasoning as the default effort', () => {
+    expect(getModelInfo('openai', 'gpt-5.6-sol')).toMatchObject({
+      id: 'gpt-5.6-sol',
+      name: 'GPT-5.6 Sol',
+      capabilities: {
+        streaming: true,
+        tools: true,
+        vision: true,
+        thinking: {
+          control: 'effort',
+          requestAdapter: 'openai',
+          effortValues: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultEffort: 'max',
+          toggleable: false,
+        },
+      },
+    });
+  });
+
   it('routes GPT-5.5 through the OpenAI Responses API', () => {
     const { model } = getModel({
       providerId: 'openai',
@@ -103,6 +122,27 @@ describe('OpenAI provider defaults', () => {
     expect(openAiMock.responses).toHaveBeenCalledWith('gpt-5.5');
     expect(openAiMock.chat).not.toHaveBeenCalled();
     expect(model).toEqual({ endpoint: 'responses', modelId: 'gpt-5.5' });
+  });
+
+  it('routes GPT-5.6 Sol through the chat completions API', () => {
+    const { model } = getModel({
+      providerId: 'openai',
+      modelId: 'gpt-5.6-sol',
+      apiKey: 'sk-test',
+    });
+
+    expect(openAiMock.chat).toHaveBeenCalledWith('gpt-5.6-sol');
+    expect(openAiMock.responses).not.toHaveBeenCalled();
+    expect(model).toEqual({ endpoint: 'chat', modelId: 'gpt-5.6-sol' });
+  });
+
+  it('injects GPT-5.6 Sol max effort after the SDK option parser', async () => {
+    const body = await captureInjectedRequestBody('openai', 'gpt-5.6-sol', {
+      mode: 'enabled',
+      effort: 'max',
+    });
+
+    expect(body).toMatchObject({ reasoning_effort: 'max' });
   });
 
   it('includes latest official GLM and Kimi coding models', () => {

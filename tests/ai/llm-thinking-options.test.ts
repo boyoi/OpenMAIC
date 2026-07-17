@@ -10,9 +10,23 @@ vi.mock('ai', () => ({
   streamText: aiMock.streamText,
 }));
 
-import { callLLM } from '@/lib/ai/llm';
+import { callLLM, resolveThinkingProviderOptions } from '@/lib/ai/llm';
 
 describe('LLM thinking provider options', () => {
+  it('defers GPT-5.6 Sol max effort to the request fetch wrapper', () => {
+    const model = {
+      provider: 'openai.chat',
+      modelId: 'gpt-5.6-sol',
+    } as Parameters<typeof resolveThinkingProviderOptions>[0];
+
+    expect(
+      resolveThinkingProviderOptions(model, { mode: 'enabled', effort: 'max' }),
+    ).toBeUndefined();
+    expect(resolveThinkingProviderOptions(model, { mode: 'enabled', effort: 'high' })).toEqual({
+      openai: { reasoningEffort: 'high' },
+    });
+  });
+
   it('sends Claude Haiku 4.5 thinking budget without effort', async () => {
     await callLLM(
       {

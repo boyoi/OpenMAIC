@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   createSceneWithActions: vi.fn(),
   persistClassroom: vi.fn(),
   callLLM: vi.fn(),
+  collectStreamedLLMText: vi.fn(),
 }));
 
 vi.mock('@/lib/server/resolve-model', () => ({
@@ -22,6 +23,7 @@ vi.mock('@/lib/ai/providers', () => ({
 
 vi.mock('@/lib/ai/llm', () => ({
   callLLM: mocks.callLLM,
+  collectStreamedLLMText: mocks.collectStreamedLLMText,
 }));
 
 vi.mock('@/lib/generation/outline-generator', () => ({
@@ -91,6 +93,7 @@ describe('classroom scene generation retries', () => {
     });
     mocks.isProviderKeyRequired.mockReturnValue(false);
     mocks.callLLM.mockResolvedValue({ text: 'ok' });
+    mocks.collectStreamedLLMText.mockResolvedValue('ok');
     mocks.generateSceneOutlinesFromRequirements.mockResolvedValue({
       success: true,
       data: {
@@ -155,10 +158,9 @@ describe('classroom scene generation retries', () => {
 
     await generateWithProgress();
 
-    expect(mocks.callLLM).toHaveBeenCalledWith(
+    expect(mocks.collectStreamedLLMText).toHaveBeenCalledWith(
       expect.objectContaining({ maxRetries: 0 }),
       'generate-classroom-scene',
-      undefined,
       thinkingConfig,
     );
   });

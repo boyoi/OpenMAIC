@@ -7,7 +7,7 @@
  */
 
 import { NextRequest } from 'next/server';
-import { callLLM } from '@/lib/ai/llm';
+import { collectStreamedLLMText } from '@/lib/ai/llm';
 import {
   generateSceneActions,
   buildCompleteScene,
@@ -27,12 +27,17 @@ import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { llmApiError } from '@/lib/server/llm-error-response';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
+import { withJsonHeartbeat } from '@/lib/server/json-heartbeat-response';
 
 const log = createLogger('Scene Actions API');
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  return withJsonHeartbeat(generateSceneActionsResponse(req));
+}
+
+async function generateSceneActionsResponse(req: NextRequest) {
   let outlineTitle: string | undefined;
   let resolvedModelString: string | undefined;
   try {
@@ -99,7 +104,7 @@ export async function POST(req: NextRequest) {
       images?: Array<{ id: string; src: string }>,
     ): Promise<string> => {
       if (images?.length && hasVision) {
-        const result = await callLLM(
+        return collectStreamedLLMText(
           {
             model: languageModel,
             system: systemPrompt,
@@ -111,26 +116,24 @@ export async function POST(req: NextRequest) {
             ],
             maxOutputTokens: modelInfo?.outputWindow,
             maxRetries: 0,
+            abortSignal: req.signal,
           },
           'scene-actions',
-          undefined,
           thinkingConfig,
         );
-        return result.text;
       }
-      const result = await callLLM(
+      return collectStreamedLLMText(
         {
           model: languageModel,
           system: systemPrompt,
           prompt: userPrompt,
           maxOutputTokens: modelInfo?.outputWindow,
           maxRetries: 0,
+          abortSignal: req.signal,
         },
         'scene-actions',
-        undefined,
         thinkingConfig,
       );
-      return result.text;
     };
 
     // ── Build cross-scene context ──

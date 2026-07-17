@@ -213,11 +213,18 @@ export function replaceMediaPlaceholders(scenes: Scene[], mediaMap: Record<strin
 // TTS generation
 // ---------------------------------------------------------------------------
 
+export interface ClassroomTTSGenerationResult {
+  attempted: number;
+  generated: number;
+  failed: number;
+  skippedReason?: string;
+}
+
 export async function generateTTSForClassroom(
   scenes: Scene[],
   classroomId: string,
   baseUrl: string,
-): Promise<void> {
+): Promise<ClassroomTTSGenerationResult> {
   const audioDir = path.join(CLASSROOMS_DIR, classroomId, 'audio');
   await ensureDir(audioDir);
 
@@ -228,7 +235,12 @@ export async function generateTTSForClassroom(
     .map(([id]) => id);
   if (ttsProviderIds.length === 0) {
     log.warn('No server TTS provider configured, skipping TTS generation');
-    return;
+    return {
+      attempted: 0,
+      generated: 0,
+      failed: 0,
+      skippedReason: 'no server TTS provider configured',
+    };
   }
 
   const providerId = ttsProviderIds[0] as TTSProviderId;
@@ -236,15 +248,29 @@ export async function generateTTSForClassroom(
   const ttsProvider = TTS_PROVIDERS[providerId as keyof typeof TTS_PROVIDERS];
   if (ttsProvider?.requiresApiKey && !apiKey) {
     log.warn(`No API key for TTS provider "${providerId}", skipping TTS generation`);
-    return;
+    return {
+      attempted: 0,
+      generated: 0,
+      failed: 0,
+      skippedReason: `no API key for TTS provider "${providerId}"`,
+    };
   }
   const ttsBaseUrl = resolveTTSBaseUrl(providerId) || ttsProvider?.defaultBaseUrl;
   const voice = DEFAULT_TTS_VOICES[providerId as keyof typeof DEFAULT_TTS_VOICES] || 'default';
   const format = ttsProvider?.supportedFormats?.[0] || 'mp3';
   if (providerId === VOXCPM_TTS_PROVIDER_ID && voice === VOXCPM_AUTO_VOICE_ID) {
     log.warn('VoxCPM Auto Voice requires agent context; skipping server-side TTS generation');
-    return;
+    return {
+      attempted: 0,
+      generated: 0,
+      failed: 0,
+      skippedReason: 'VoxCPM Auto Voice requires agent context',
+    };
   }
+
+  let attempted = 0;
+  let generated = 0;
+  let failed = 0;
 
   for (const scene of scenes) {
     if (!scene.actions) continue;
@@ -259,6 +285,8 @@ export async function generateTTSForClassroom(
     for (const action of scene.actions) {
       if (action.type !== 'speech' || !(action as SpeechAction).text) continue;
       const speechAction = action as SpeechAction;
+      if (!speechAction.text.trim()) continue;
+      attempted += 1;
       // Include scene order in audioId to prevent collision across scenes
       const audioId = `tts_s${sceneOrder}_${action.id}`;
 
@@ -280,10 +308,18 @@ export async function generateTTSForClassroom(
 
         speechAction.audioId = audioId;
         speechAction.audioUrl = mediaServingUrl(baseUrl, classroomId, `audio/${filename}`);
+        generated += 1;
         log.info(`Generated TTS: ${filename} (${result.audio.length} bytes)`);
       } catch (err) {
+        failed += 1;
         log.warn(`TTS generation failed for action ${action.id}:`, err);
       }
     }
   }
+
+  if (attempted > 0 && generated === 0) {
+    throw new Error(`TTS generation failed for all ${attempted} speech actions`);
+  }
+
+  return { attempted, generated, failed };
 }

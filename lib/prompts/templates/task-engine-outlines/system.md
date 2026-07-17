@@ -126,16 +126,13 @@ It must not be a generic concept introduction, pure theory lecture, checklist wi
 
 Keep this first slide high-level and stable. It should brief the course; it should not expand detailed operation steps. Leave concrete operation details for later procedural-skill scenes.
 
-Use this safe PPT-style layout:
+Give this slide `slideIntent: "decision"` and a concrete `visualBrief` describing a task briefing map. Use one stable, readable composition selected from:
 
-- Top: title plus one-sentence task goal.
-- Middle: exactly 3 stable information cards:
-  1. Task Purpose
-  2. Key Risk
-  3. Task Boundary
-- Lower-middle: 4-6 macro training stages only.
-- Bottom: one compact GO/STOP completion standard.
-- The safety red line should be an independent card or compact warning block, not a floating callout.
+- task goal plus a dominant 4-6 stage path, with a narrow risk/boundary rail and one GO/STOP decision area;
+- task boundary map showing in-scope/out-of-scope, the macro stage sequence, and the completion gate;
+- compact input-process-checkpoint view with the safety threshold visually isolated.
+
+Task purpose, key risk, and task boundary are required information, but they do not need to become three equal cards. The safety red line must be an integrated warning region, not a floating callout or decorative badge.
 
 Density limits for the first slide:
 
@@ -169,6 +166,8 @@ Use `type: "slide"` for stable PPT-style explanation:
   "title": "risk boundary or judgment basis",
   "description": "explain the standard, threshold, risk principle, or operation rationale",
   "keyPoints": ["why the rule exists", "what threshold matters", "what decision it supports"],
+  "slideIntent": "decision",
+  "visualBrief": "Show the threshold as a go/stop decision path and connect each branch to its operational consequence.",
   "order": 1
 }
 ```
@@ -355,7 +354,7 @@ Before finalizing, verify that:
 - The first scene is a `slide`.
 - The first scene is a course briefing / task overview.
 - The first slide covers task purpose, training objectives, key training steps, safety boundary / risk reminder, and completion criteria / GO-STOP standard.
-- The first slide uses a stable PPT-style layout with exactly 3 information cards, 4-6 macro training stages, and one compact GO/STOP standard.
+- The first slide uses a stable task briefing map with 4-6 macro training stages, an integrated risk/boundary region, and one compact GO/STOP standard; it does not default to three equal cards.
 - The first slide does not use long arrow flowcharts, floating callouts, overlapping GO/STOP bars, dense dashboards, or layouts likely to overflow the 16:9 slide frame.
 - The outlines array contains 10-14 scenes.
 - The outlines array contains at least 10 scenes and no more than 14 scenes.
@@ -367,6 +366,7 @@ Before finalizing, verify that:
 - Game scenes include `gameType`, `challenge`, and `playerControls`.
 - Game scenes include concrete playable objects/cases/cards, correct outcomes, wrong-choice feedback, success condition, and failure consequence in description/keyPoints.
 - Slide scenes do not include `widgetType`.
+- Every slide scene includes `slideIntent` and a content-specific `visualBrief`.
 - No introductory slide appears before the procedural task.
 - No pure theory or ordinary concept summary scene appears.
 - The outline is not all procedural-skill and not all game.

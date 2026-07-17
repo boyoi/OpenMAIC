@@ -426,9 +426,9 @@ const getDefaultAudioConfig = () => ({
       modelId: 'kokoro-v1',
       enabled: true,
     },
-    // Browser-native is OFF by default — fully opt-in. Native voice quality is
-    // poor; it must never be a silent default (#665).
-    'browser-native-tts': { apiKey: '', baseUrl: '', enabled: false },
+    // Browser-native is the reliable zero-configuration fallback when this
+    // deployment has no managed TTS backend.
+    'browser-native-tts': { apiKey: '', baseUrl: '', enabled: true },
   } as Record<
     TTSProviderId,
     { apiKey: string; baseUrl: string; modelId?: string; enabled: boolean }
@@ -865,10 +865,8 @@ export const useSettingsStore = create<SettingsState>()(
         videoGenerationEnabled: false,
         reviewOutlineEnabled: false,
 
-        // TTS is OFF by default; auto-enabled on first server-sync when a TTS
-        // provider is configured (mirrors image/video). Fresh installs with no
-        // provider stay off and show an "enable browser-native" CTA (#665).
-        ttsEnabled: false,
+        // Keep narration available on fresh installs through browser-native TTS.
+        ttsEnabled: true,
         asrEnabled: true,
 
         // Off until the server reports a concurrency via fetchServerProviders.
@@ -1276,8 +1274,14 @@ export const useSettingsStore = create<SettingsState>()(
                   // When server specifies allowed models, filter the models list
                   // while preserving custom IDs from env/YAML in server order.
                   const currentModelMap = new Map(currentModels.map((m) => [m.id, m]));
+                  const catalogModelMap = new Map(
+                    (PROVIDERS[key]?.models ?? []).map((model) => [model.id, model]),
+                  );
                   const filteredModels = info.models?.length
-                    ? info.models.map((id) => currentModelMap.get(id) ?? { id, name: id })
+                    ? info.models.map(
+                        (id) =>
+                          catalogModelMap.get(id) ?? currentModelMap.get(id) ?? { id, name: id },
+                      )
                     : currentModels;
                   newProvidersConfig[key] = {
                     ...newProvidersConfig[key],
@@ -1695,7 +1699,7 @@ export const useSettingsStore = create<SettingsState>()(
     },
     {
       name: 'settings-storage',
-      version: 4,
+      version: 5,
       // Migrate persisted state
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Partial<SettingsState>;
@@ -1731,7 +1735,13 @@ export const useSettingsStore = create<SettingsState>()(
         // Add default audio config if missing
         if (!state.ttsProvidersConfig || !state.asrProvidersConfig) {
           const defaultAudioConfig = getDefaultAudioConfig();
-          Object.assign(state, defaultAudioConfig);
+          state.ttsProviderId ??= defaultAudioConfig.ttsProviderId;
+          state.ttsVoice ??= defaultAudioConfig.ttsVoice;
+          state.ttsSpeed ??= defaultAudioConfig.ttsSpeed;
+          state.asrProviderId ??= defaultAudioConfig.asrProviderId;
+          state.asrLanguage ??= defaultAudioConfig.asrLanguage;
+          state.ttsProvidersConfig ??= defaultAudioConfig.ttsProvidersConfig;
+          state.asrProvidersConfig ??= defaultAudioConfig.asrProvidersConfig;
         }
         ensureBuiltInAudioProviders(state);
         ensureBuiltInWebSearchProviders(state);
@@ -1881,6 +1891,41 @@ export const useSettingsStore = create<SettingsState>()(
           for (const pid of Object.keys(TTS_PROVIDERS) as BuiltInTTSProviderId[]) {
             const cfg = state.ttsProvidersConfig[pid];
             if (cfg) cfg.enabled = pid !== 'browser-native-tts';
+          }
+        }
+
+        // v4 → v5: avoid silent playback on deployments without managed TTS.
+        // Localhost endpoints persisted from Lemonade/VoxCPM point at the
+        // OpenMAIC server, where those services may not exist; fall back to the
+        // browser voice unless the selected provider has a real credential or
+        // a non-loopback endpoint.
+        if (version < 5 && state.ttsProvidersConfig) {
+          const browserConfig = state.ttsProvidersConfig['browser-native-tts'];
+          if (browserConfig) browserConfig.enabled = true;
+
+          const selected = state.ttsProviderId
+            ? state.ttsProvidersConfig[state.ttsProviderId]
+            : undefined;
+          const baseUrl = selected?.baseUrl?.trim();
+          let loopbackBaseUrl = false;
+          if (baseUrl) {
+            try {
+              const hostname = new URL(baseUrl).hostname;
+              loopbackBaseUrl =
+                hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+            } catch {
+              loopbackBaseUrl = true;
+            }
+          }
+          const hasUsableRemoteProvider =
+            selected?.isServerConfigured ||
+            !!selected?.apiKey?.trim() ||
+            (!!baseUrl && !loopbackBaseUrl);
+
+          if (!hasUsableRemoteProvider || state.ttsProviderId === 'browser-native-tts') {
+            state.ttsProviderId = 'browser-native-tts';
+            state.ttsVoice = 'default';
+            state.ttsEnabled = true;
           }
         }
 

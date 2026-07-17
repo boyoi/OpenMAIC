@@ -46,6 +46,7 @@
     "exportFailed": "导出失败",
     "classroomZip": "导出课堂 ZIP",
     "classroomZipDesc": "课程结构 + 媒体文件",
+    "partialWarning": "生成尚未完成，本次仅导出当前已完成的内容；未完成的场景或媒体不会包含在文件中。",
     "inlinePartial": "{{count}} 个外部资源未能打包，离线时课程可能无法正常显示。"
   },
   "import": {
@@ -158,7 +159,23 @@
     "exitFullscreen": "退出全屏",
     "editCourse": "编辑课程",
     "doneEditing": "完成编辑",
-    "proModeDisabledHint": "本页不支持编辑——打开任意课程页即可使用 Pro 模式编辑。"
+    "proModeDisabledHint": "本页不支持编辑——打开任意课程页即可使用 Pro 模式编辑。",
+    "feedback": {
+      "button": "反馈问题",
+      "buttonTitle": "向 AI 反馈当前页的问题",
+      "title": "反馈当前页问题",
+      "descriptionInteractive": "描述哪里不正常。提交后将进入专业模式，AI 会读取运行错误并只修改必要代码。",
+      "descriptionSlide": "描述内容或排版问题。提交后 AI 会重新生成本页，页面细节和讲解可能发生变化。",
+      "fieldLabel": "问题描述",
+      "placeholder": "例如：点击“开始”没有反应；第二行文字被遮挡……",
+      "runtimeErrors": "已检测到 {{count}} 条运行错误，将一并提供给 AI。",
+      "submit": "交给 AI 修复",
+      "entering": "正在打开 AI 修复…",
+      "error": "无法启动修复，请稍后重试。",
+      "empty": "请先描述问题。",
+      "agentPromptInteractive": "本页问题反馈：{{report}}\n请直接修复当前互动页：先读取当前页内容和运行时错误；同时检查相关按钮和控件的选择器、事件绑定、初始化、disabled 状态和遮挡层，因为无响应不一定会抛错。仅做必要的 HTML/JavaScript 定点修改，保留其他内容和交互；不要只解释。修复后简要说明改动，并请我重新点击验证。",
+      "agentPromptSlide": "本页问题反馈：{{report}}\n我授权你根据这条反馈重新生成当前幻灯片。请先读取当前页内容，再直接重新生成本页内容和讲解以解决问题；不要只解释。完成后简要说明改动并提醒我检查页面。"
+    }
   },
   "edit": {
     "proMode": "专业模式",

@@ -3,17 +3,27 @@
 import { ArrowLeft } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useRouter } from 'next/navigation';
-import type { StageMode } from '@/lib/types/stage';
+import type { Scene, StageMode } from '@/lib/types/stage';
 import { HeaderControls } from './stage/header-controls';
+import { SceneFeedbackButton, type SceneFeedbackSubmission } from './stage/scene-feedback-button';
 
 interface HeaderProps {
   readonly currentSceneTitle: string;
   readonly mode?: StageMode;
   readonly canEdit?: boolean;
   readonly onToggleEditMode?: () => void;
+  readonly currentScene?: Scene | null;
+  readonly onSceneFeedback?: (submission: SceneFeedbackSubmission) => Promise<boolean>;
 }
 
-export function Header({ currentSceneTitle, mode, canEdit, onToggleEditMode }: HeaderProps) {
+export function Header({
+  currentSceneTitle,
+  mode,
+  canEdit,
+  onToggleEditMode,
+  currentScene,
+  onSceneFeedback,
+}: HeaderProps) {
   const { t } = useI18n();
   const router = useRouter();
 
@@ -52,7 +62,16 @@ export function Header({ currentSceneTitle, mode, canEdit, onToggleEditMode }: H
           )}
         </div>
 
-        <HeaderControls mode={mode} canEdit={canEdit} onToggleEditMode={onToggleEditMode} />
+        <div className="flex shrink-0 items-center gap-3">
+          {currentScene && onSceneFeedback ? (
+            <SceneFeedbackButton
+              key={currentScene.id}
+              scene={currentScene}
+              onSubmit={onSceneFeedback}
+            />
+          ) : null}
+          <HeaderControls mode={mode} canEdit={canEdit} onToggleEditMode={onToggleEditMode} />
+        </div>
       </header>
     </>
   );

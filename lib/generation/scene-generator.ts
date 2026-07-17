@@ -33,7 +33,8 @@ import { buildPrompt, PROMPT_IDS } from '@/lib/prompts';
 import { DEFAULT_LANGUAGE_DIRECTIVE } from './outline-generator';
 import { postProcessInteractiveHtml } from './interactive-post-processor';
 import { parseActionsFromStructuredOutput } from './action-parser';
-import { parseJsonResponse } from './json-repair';
+import { hasCompleteJsonEnvelope, parseJsonResponse } from './json-repair';
+import { buildSlideDesignBrief, resolveSlideDesign } from './slide-design';
 import {
   buildCourseContext,
   formatAgentsForPrompt,
@@ -66,6 +67,8 @@ const INTERACTIVE_WIDGET_ACTIONS = [
 // ── Options interfaces for scene generation functions ──
 
 export interface SceneContentOptions {
+  /** Full deck outline context for visual rhythm and stable palette selection. */
+  allOutlines?: SceneOutline[];
   assignedImages?: PdfImage[];
   imageMapping?: ImageMapping;
   languageModel?: LanguageModel;
@@ -135,7 +138,13 @@ export async function generateFullScenes(
   const results = await Promise.all(
     sceneOutlines.map(async (outline, index) => {
       try {
-        const sceneId = await generateSingleScene(outline, api, aiCall, languageDirective);
+        const sceneId = await generateSingleScene(
+          outline,
+          api,
+          aiCall,
+          languageDirective,
+          sceneOutlines,
+        );
 
         // Update progress (not atomic, but sufficient for UI display)
         completedCount++;
@@ -180,10 +189,11 @@ async function generateSingleScene(
   api: ReturnType<typeof createStageAPI>,
   aiCall: AICallFn,
   languageDirective?: string,
+  allOutlines?: SceneOutline[],
 ): Promise<string | null> {
   // Step 3.1: Generate content
   log.info(`Step 3.1: Generating content for: ${outline.title}`);
-  const content = await generateSceneContent(outline, aiCall, { languageDirective });
+  const content = await generateSceneContent(outline, aiCall, { languageDirective, allOutlines });
   if (!content) {
     log.error(`Failed to generate content for: ${outline.title}`);
     return null;
@@ -318,6 +328,7 @@ export async function generateSceneContent(
     allowProceduralSkill = false,
     editDirective,
     baselineContent,
+    allOutlines,
   } = options;
 
   // Unified path for interactive scenes (both normal and ultra mode)
@@ -357,6 +368,7 @@ export async function generateSceneContent(
         languageDirective,
         editDirective,
         baselineContent,
+        allOutlines,
       );
     case 'quiz':
       return generateQuizContent(outline, aiCall, languageDirective);
@@ -621,15 +633,15 @@ function fixElementDefaults(
     // Fix shape elements
     if (el.type === 'shape') {
       const shapeEl = el as Record<string, unknown>;
+      const width = Number.isFinite(el.width) && el.width > 0 ? el.width : 100;
+      const height = Number.isFinite(el.height) && el.height > 0 ? el.height : 100;
 
       if (!shapeEl.viewBox) {
-        shapeEl.viewBox = `0 0 ${el.width ?? 100} ${el.height ?? 100}`;
+        shapeEl.viewBox = [width, height];
       }
       if (!shapeEl.path) {
         // Default to rectangle
-        const w = el.width ?? 100;
-        const h = el.height ?? 100;
-        shapeEl.path = `M0 0 L${w} 0 L${w} ${h} L0 ${h} Z`;
+        shapeEl.path = `M0 0 L${width} 0 L${width} ${height} L0 ${height} Z`;
       }
       if (!shapeEl.fill) {
         shapeEl.fill = '#5b9bd5';
@@ -639,6 +651,81 @@ function fixElementDefaults(
       }
 
       return shapeEl as typeof el;
+    }
+
+    // Fix chart elements
+    if (el.type === 'chart') {
+      const chartEl = el as Record<string, unknown>;
+      if (!Array.isArray(chartEl.themeColors) || chartEl.themeColors.length === 0) {
+        chartEl.themeColors = ['#0F766E', '#2563EB', '#E4573D'];
+      }
+      if (!chartEl.textColor) chartEl.textColor = '#475569';
+      if (!chartEl.lineColor) chartEl.lineColor = '#D8DEE6';
+
+      const data = chartEl.data as Record<string, unknown> | undefined;
+      if (data && Array.isArray(data.series) && !Array.isArray(data.legends)) {
+        data.legends = data.series.map((_, index) => `Series ${index + 1}`);
+      }
+      return chartEl as typeof el;
+    }
+
+    // Fix table elements
+    if (el.type === 'table') {
+      const tableEl = el as Record<string, unknown>;
+      const rows = Array.isArray(tableEl.data) ? tableEl.data : [];
+      const firstRow = Array.isArray(rows[0]) ? rows[0] : [];
+      if (!Array.isArray(tableEl.colWidths) && firstRow.length > 0) {
+        tableEl.colWidths = firstRow.map(() => 1 / firstRow.length);
+      }
+      if (!tableEl.cellMinHeight) tableEl.cellMinHeight = 44;
+      if (!tableEl.outline) {
+        tableEl.outline = { width: 1, color: '#D8DEE6', style: 'solid' };
+      }
+      tableEl.data = rows.map((row, rowIndex) =>
+        Array.isArray(row)
+          ? row.map((cell, columnIndex) => {
+              const value =
+                cell && typeof cell === 'object'
+                  ? (cell as Record<string, unknown>)
+                  : { text: String(cell ?? '') };
+              return {
+                ...value,
+                id:
+                  typeof value.id === 'string' && value.id
+                    ? value.id
+                    : `cell_${rowIndex + 1}_${columnIndex + 1}`,
+                colspan:
+                  Number.isInteger(Number(value.colspan)) && Number(value.colspan) > 0
+                    ? Number(value.colspan)
+                    : 1,
+                rowspan:
+                  Number.isInteger(Number(value.rowspan)) && Number(value.rowspan) > 0
+                    ? Number(value.rowspan)
+                    : 1,
+              };
+            })
+          : [],
+      );
+      return tableEl as typeof el;
+    }
+
+    // Fix code elements
+    if (el.type === 'code') {
+      const codeEl = el as Record<string, unknown>;
+      const lines = Array.isArray(codeEl.lines) ? codeEl.lines : [];
+      codeEl.lines = lines.map((line, index) => {
+        const value =
+          typeof line === 'string' ? { content: line } : (line as Record<string, unknown>);
+        return {
+          ...value,
+          id: typeof value.id === 'string' && value.id ? value.id : `L${index + 1}`,
+          content: typeof value.content === 'string' ? value.content : String(value.content ?? ''),
+        };
+      });
+      if (!codeEl.language) codeEl.language = 'text';
+      if (codeEl.showLineNumbers === undefined) codeEl.showLineNumbers = true;
+      if (!codeEl.fontSize) codeEl.fontSize = 16;
+      return codeEl as typeof el;
     }
 
     return el;
@@ -686,6 +773,932 @@ function processLatexElements(
 /**
  * Generate slide content
  */
+const SLIDE_CANVAS_WIDTH = 1000;
+const SLIDE_CANVAS_HEIGHT = 562.5;
+const SLIDE_MAX_ELEMENTS = 16;
+const SLIDE_MAX_TEXT_ELEMENTS = 8;
+const RELIABLE_CHART_TYPES = new Set(['bar', 'column', 'line', 'pie', 'ring', 'area']);
+const SUPPORTED_SLIDE_ELEMENT_TYPES = new Set([
+  'text',
+  'image',
+  'video',
+  'shape',
+  'chart',
+  'table',
+  'code',
+  'latex',
+  'line',
+]);
+
+function escapeSlideHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function compactSlideText(value: string | undefined, maxLength: number): string {
+  const compact = (value || '').replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+const FALLBACK_RECT_PATH = 'M 0 0 L 1 0 L 1 1 L 0 1 Z';
+const FALLBACK_CIRCLE_PATH = 'M 1 0.5 A 0.5 0.5 0 1 1 0 0.5 A 0.5 0.5 0 1 1 1 0.5 Z';
+
+function fallbackShape(
+  id: string,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  fill: string,
+  outlineColor?: string,
+  circle = false,
+): GeneratedSlideData['elements'][number] {
+  return {
+    id,
+    type: 'shape',
+    left,
+    top,
+    width,
+    height,
+    path: circle ? FALLBACK_CIRCLE_PATH : FALLBACK_RECT_PATH,
+    viewBox: [1, 1],
+    fill,
+    fixedRatio: circle,
+    ...(outlineColor
+      ? { outline: { width: 1, color: outlineColor, style: 'solid' as const } }
+      : {}),
+  };
+}
+
+function fallbackText(
+  id: string,
+  text: string,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  fontSize: number,
+  color: string,
+  bold = false,
+  align: 'left' | 'center' | 'right' = 'left',
+): GeneratedSlideData['elements'][number] {
+  const content = bold ? `<strong>${escapeSlideHtml(text)}</strong>` : escapeSlideHtml(text);
+  return {
+    id,
+    type: 'text',
+    left,
+    top,
+    width,
+    height,
+    content: `<p style="font-size:${fontSize}px;color:${color};line-height:1.3;text-align:${align};">${content}</p>`,
+    defaultFontName: 'Microsoft YaHei',
+    defaultColor: color,
+    lineHeight: 1.3,
+  };
+}
+
+function fallbackLine(
+  id: string,
+  left: number,
+  top: number,
+  end: [number, number],
+  color: string,
+  arrow = true,
+): GeneratedSlideData['elements'][number] {
+  return {
+    id,
+    type: 'line',
+    left,
+    top,
+    width: 3,
+    height: 0,
+    start: [0, 0],
+    end,
+    style: 'solid',
+    color,
+    points: ['', arrow ? 'arrow' : ''],
+  };
+}
+
+function fallbackHeading(
+  outline: SceneOutline,
+  ink: string,
+  muted: string,
+  cover = false,
+): GeneratedSlideData['elements'] {
+  const title = compactSlideText(outline.title, cover ? 48 : 58);
+  const description = compactSlideText(outline.description, cover ? 100 : 118);
+  const elements: GeneratedSlideData['elements'] = [
+    fallbackText(
+      'fallback_title',
+      title,
+      60,
+      cover ? 105 : 48,
+      cover ? 500 : 880,
+      cover ? 128 : 78,
+      cover ? 46 : 36,
+      ink,
+      true,
+    ),
+  ];
+  if (description) {
+    elements.push(
+      fallbackText(
+        'fallback_description',
+        description,
+        60,
+        cover ? 245 : 132,
+        cover ? 490 : 880,
+        cover ? 84 : 58,
+        cover ? 19 : 17,
+        muted,
+      ),
+    );
+  }
+  return elements;
+}
+
+function fallbackPoints(outline: SceneOutline, limit = 5): string[] {
+  const points = (outline.keyPoints || [])
+    .map((point) => compactSlideText(point, 68))
+    .filter(Boolean)
+    .slice(0, limit);
+  if (points.length === 0) points.push(compactSlideText(outline.description || outline.title, 68));
+  for (const candidate of [outline.description, outline.title]) {
+    const compact = compactSlideText(candidate, 68);
+    if (points.length >= Math.min(2, limit)) break;
+    if (compact && !points.includes(compact)) points.push(compact);
+  }
+  return points;
+}
+
+function buildFlowFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const points = fallbackPoints(outline, 5).slice(0, 4);
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted);
+  const contentTop = outline.description ? 235 : 195;
+  const markerSize = 54;
+  const startLeft = 100;
+  const available = 760;
+  const step = points.length > 1 ? available / (points.length - 1) : 0;
+
+  points.slice(0, -1).forEach((_, index) => {
+    elements.push(
+      fallbackLine(
+        `fallback_flow_line_${index + 1}`,
+        startLeft + index * step + markerSize,
+        contentTop + markerSize / 2,
+        [Math.max(40, step - markerSize), 0],
+        design.palette.muted,
+      ),
+    );
+  });
+
+  points.forEach((point, index) => {
+    const left = startLeft + index * step;
+    elements.push(
+      fallbackShape(
+        `fallback_flow_marker_${index + 1}`,
+        left,
+        contentTop,
+        markerSize,
+        markerSize,
+        index % 2 === 0 ? design.palette.primary : design.palette.secondary,
+        undefined,
+        true,
+      ),
+      fallbackText(
+        `fallback_flow_text_${index + 1}`,
+        point,
+        Math.max(60, left - 58),
+        contentTop + 74,
+        170,
+        104,
+        17,
+        design.palette.ink,
+        true,
+        'center',
+      ),
+    );
+  });
+  return elements;
+}
+
+function buildComparisonFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const points = fallbackPoints(outline, 4);
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted);
+  const top = outline.description ? 205 : 170;
+  const sideHeight = 235;
+  const leftPoint = points[0];
+  const rightPoint = points[1] || points[0];
+  const decision = points.slice(2).join(' / ') || compactSlideText(outline.description, 68);
+
+  elements.push(
+    fallbackShape('fallback_compare_left', 60, top, 420, sideHeight, '#FFFFFF', '#D8DEE6'),
+    fallbackShape('fallback_compare_right', 520, top, 420, sideHeight, '#FFFFFF', '#D8DEE6'),
+    fallbackShape(
+      'fallback_compare_left_marker',
+      84,
+      top + 28,
+      42,
+      42,
+      design.palette.primary,
+      undefined,
+      true,
+    ),
+    fallbackShape(
+      'fallback_compare_right_marker',
+      544,
+      top + 28,
+      42,
+      42,
+      design.palette.secondary,
+      undefined,
+      true,
+    ),
+    fallbackText(
+      'fallback_compare_left_text',
+      leftPoint,
+      142,
+      top + 28,
+      305,
+      150,
+      21,
+      design.palette.ink,
+      true,
+    ),
+    fallbackText(
+      'fallback_compare_right_text',
+      rightPoint,
+      602,
+      top + 28,
+      305,
+      150,
+      21,
+      design.palette.ink,
+      true,
+    ),
+    fallbackShape('fallback_compare_rule_bg', 190, top + 260, 620, 70, design.palette.ink),
+    fallbackText(
+      'fallback_compare_rule',
+      decision,
+      215,
+      top + 270,
+      570,
+      52,
+      17,
+      '#FFFFFF',
+      true,
+      'center',
+    ),
+  );
+  return elements;
+}
+
+function buildArchitectureFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const points = fallbackPoints(outline, 4);
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted);
+  const top = outline.description ? 190 : 160;
+  const rowHeight = points.length > 3 ? 68 : 82;
+  const gap = 18;
+
+  points.slice(0, -1).forEach((_, index) => {
+    elements.push(
+      fallbackLine(
+        `fallback_arch_line_${index + 1}`,
+        500,
+        top + rowHeight + index * (rowHeight + gap),
+        [0, gap],
+        design.palette.muted,
+      ),
+    );
+  });
+
+  points.forEach((point, index) => {
+    const rowTop = top + index * (rowHeight + gap);
+    const fill =
+      index === 0
+        ? design.palette.primary
+        : index === points.length - 1
+          ? design.palette.secondary
+          : '#FFFFFF';
+    const textColor = index === 0 || index === points.length - 1 ? '#FFFFFF' : design.palette.ink;
+    elements.push(
+      fallbackShape(
+        `fallback_arch_layer_${index + 1}`,
+        160 + index * 18,
+        rowTop,
+        680 - index * 36,
+        rowHeight,
+        fill,
+        fill === '#FFFFFF' ? '#D8DEE6' : undefined,
+      ),
+      fallbackText(
+        `fallback_arch_text_${index + 1}`,
+        point,
+        190 + index * 18,
+        rowTop + 9,
+        620 - index * 36,
+        rowHeight - 18,
+        18,
+        textColor,
+        true,
+        'center',
+      ),
+    );
+  });
+  return elements;
+}
+
+function buildConceptFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const points = fallbackPoints(outline, 4).slice(0, 3);
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted);
+  const centerTop = outline.description ? 265 : 225;
+  const centerLeft = 420;
+  const nodePositions = [
+    { left: 90, top: centerTop - 70 },
+    { left: 720, top: centerTop - 70 },
+    { left: 405, top: centerTop + 145 },
+  ];
+
+  nodePositions.slice(0, points.length).forEach((position, index) => {
+    const endX =
+      position.left < centerLeft ? position.left - centerLeft + 150 : position.left - centerLeft;
+    const endY = position.top - centerTop + 55;
+    elements.push(
+      fallbackLine(
+        `fallback_concept_line_${index + 1}`,
+        centerLeft + 80,
+        centerTop + 80,
+        [endX, endY],
+        design.palette.muted,
+        false,
+      ),
+    );
+  });
+
+  elements.push(
+    fallbackShape(
+      'fallback_concept_center',
+      centerLeft,
+      centerTop,
+      160,
+      160,
+      design.palette.primary,
+      undefined,
+      true,
+    ),
+    fallbackText(
+      'fallback_concept_center_text',
+      compactSlideText(outline.title, 24),
+      centerLeft + 18,
+      centerTop + 45,
+      124,
+      70,
+      20,
+      '#FFFFFF',
+      true,
+      'center',
+    ),
+  );
+
+  points.forEach((point, index) => {
+    const position = nodePositions[index];
+    elements.push(
+      fallbackShape(
+        `fallback_concept_node_${index + 1}`,
+        position.left,
+        position.top,
+        190,
+        110,
+        '#FFFFFF',
+        index === 2 ? design.palette.accent : '#D8DEE6',
+      ),
+      fallbackText(
+        `fallback_concept_text_${index + 1}`,
+        point,
+        position.left + 14,
+        position.top + 18,
+        162,
+        78,
+        17,
+        design.palette.ink,
+        true,
+        'center',
+      ),
+    );
+  });
+  return elements;
+}
+
+function buildDecisionFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const points = fallbackPoints(outline, 4);
+  const checks = points.slice(0, 3);
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted);
+  const top = outline.description ? 200 : 170;
+
+  checks.forEach((point, index) => {
+    const rowTop = top + index * 82;
+    elements.push(
+      fallbackShape(
+        `fallback_decision_marker_${index + 1}`,
+        105,
+        rowTop + 9,
+        48,
+        48,
+        index === checks.length - 1 ? design.palette.accent : design.palette.primary,
+        undefined,
+        true,
+      ),
+      fallbackText(
+        `fallback_decision_text_${index + 1}`,
+        point,
+        180,
+        rowTop,
+        700,
+        66,
+        18,
+        design.palette.ink,
+        true,
+      ),
+    );
+  });
+
+  const outcome =
+    points[3] || compactSlideText(outline.description, 72) || compactSlideText(outline.title, 48);
+  elements.push(
+    fallbackShape('fallback_decision_outcome_bg', 180, top + 258, 700, 76, design.palette.ink),
+    fallbackText(
+      'fallback_decision_outcome',
+      outcome,
+      205,
+      top + 270,
+      650,
+      52,
+      17,
+      '#FFFFFF',
+      true,
+      'center',
+    ),
+  );
+  return elements;
+}
+
+function looksLikeCode(value: string): boolean {
+  return /[=(){};]|^(?:from|import|const|let|var|def|class|curl|pip|npm|pnpm|yarn|docker|git)\b/i.test(
+    value.trim(),
+  );
+}
+
+function buildCodeFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const rawPoints = (outline.keyPoints || []).map((point) => String(point).trim()).filter(Boolean);
+  if (!rawPoints.some(looksLikeCode)) return buildFlowFallback(outline, design);
+
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted);
+  const top = outline.description ? 190 : 160;
+  const language = /python|pip\b|from\s+\w+\s+import|def\s+/i.test(outlineTextForFallback(outline))
+    ? 'python'
+    : /typescript|interface\s+\w+|:\s*(string|number|boolean)/i.test(
+          outlineTextForFallback(outline),
+        )
+      ? 'typescript'
+      : 'javascript';
+  const codeLines = rawPoints
+    .slice(0, 12)
+    .map((content, index) => ({ id: `L${index + 1}`, content }));
+  const note = compactSlideText(outline.description, 120) || compactSlideText(outline.title, 70);
+
+  elements.push(
+    {
+      id: 'fallback_code',
+      type: 'code',
+      left: 60,
+      top,
+      width: 600,
+      height: 330,
+      language,
+      fileName: language === 'python' ? 'main.py' : 'main.ts',
+      showLineNumbers: true,
+      fontSize: 16,
+      lines: codeLines,
+    },
+    fallbackShape('fallback_code_note_bg', 690, top, 250, 330, '#FFFFFF', '#D8DEE6'),
+    fallbackText('fallback_code_note', note, 714, top + 28, 202, 150, 18, design.palette.ink, true),
+    fallbackShape('fallback_code_result_bg', 714, top + 220, 202, 78, design.palette.primary),
+    fallbackText(
+      'fallback_code_result',
+      compactSlideText(rawPoints.at(-1) || note, 52),
+      728,
+      top + 232,
+      174,
+      54,
+      15,
+      '#FFFFFF',
+      true,
+      'center',
+    ),
+  );
+  return elements;
+}
+
+function outlineTextForFallback(outline: SceneOutline): string {
+  return [outline.title, outline.description, ...(outline.keyPoints || [])].join(' ');
+}
+
+function buildCoverFallback(
+  outline: SceneOutline,
+  design: ReturnType<typeof resolveSlideDesign>,
+): GeneratedSlideData['elements'] {
+  const points = fallbackPoints(outline, 3);
+  const elements = fallbackHeading(outline, design.palette.ink, design.palette.muted, true);
+  const centerLeft = 690;
+  const centerTop = 230;
+  const satellites = [
+    { left: 600, top: 95 },
+    { left: 825, top: 175 },
+    { left: 650, top: 410 },
+  ];
+
+  satellites.slice(0, points.length).forEach((position, index) => {
+    elements.push(
+      fallbackLine(
+        `fallback_cover_line_${index + 1}`,
+        centerLeft + 75,
+        centerTop + 75,
+        [position.left - centerLeft + 45, position.top - centerTop + 45],
+        design.palette.muted,
+        false,
+      ),
+    );
+  });
+  elements.push(
+    fallbackShape(
+      'fallback_cover_center',
+      centerLeft,
+      centerTop,
+      150,
+      150,
+      design.palette.primary,
+      undefined,
+      true,
+    ),
+    fallbackText(
+      'fallback_cover_center_text',
+      '01',
+      centerLeft,
+      centerTop + 42,
+      150,
+      60,
+      32,
+      '#FFFFFF',
+      true,
+      'center',
+    ),
+  );
+  points.forEach((point, index) => {
+    const position = satellites[index];
+    elements.push(
+      fallbackShape(
+        `fallback_cover_node_${index + 1}`,
+        position.left,
+        position.top,
+        120,
+        90,
+        index === 2 ? design.palette.accent : '#FFFFFF',
+        index === 2 ? undefined : '#D8DEE6',
+      ),
+      fallbackText(
+        `fallback_cover_text_${index + 1}`,
+        point,
+        position.left + 10,
+        position.top + 12,
+        100,
+        66,
+        15,
+        index === 2 ? '#FFFFFF' : design.palette.ink,
+        true,
+        'center',
+      ),
+    );
+  });
+  return elements;
+}
+
+function buildReliableSlideFallback(
+  outline: SceneOutline,
+  reason: string,
+  allOutlines?: SceneOutline[],
+): GeneratedSlideData {
+  const design = resolveSlideDesign(outline, allOutlines);
+  log.warn(
+    `Using reliable slide fallback for "${outline.title}" [${design.intent}/${design.variant}]: ${reason}`,
+  );
+
+  let elements: GeneratedSlideData['elements'];
+  switch (design.intent) {
+    case 'cover':
+      elements = buildCoverFallback(outline, design);
+      break;
+    case 'process':
+    case 'timeline':
+    case 'worked-example':
+      elements = buildFlowFallback(outline, design);
+      break;
+    case 'comparison':
+    case 'case-study':
+      elements = buildComparisonFallback(outline, design);
+      break;
+    case 'architecture':
+      elements = buildArchitectureFallback(outline, design);
+      break;
+    case 'code':
+      elements = buildCodeFallback(outline, design);
+      break;
+    case 'decision':
+      elements = buildDecisionFallback(outline, design);
+      break;
+    case 'data':
+    case 'summary':
+    case 'concept':
+    default:
+      elements = buildConceptFallback(outline, design);
+      break;
+  }
+
+  return {
+    background: { type: 'solid', color: design.palette.background },
+    elements: elements.slice(0, SLIDE_MAX_ELEMENTS),
+    remark: outline.description,
+  };
+}
+
+function structuredElementQualityIssue(
+  element: GeneratedSlideData['elements'][number],
+): string | undefined {
+  const value = element as Record<string, unknown>;
+
+  if (element.type === 'shape') {
+    const viewBox = value.viewBox;
+    if (
+      !Array.isArray(viewBox) ||
+      viewBox.length !== 2 ||
+      viewBox.some(
+        (dimension) =>
+          typeof dimension !== 'number' || !Number.isFinite(dimension) || dimension <= 0,
+      )
+    ) {
+      return 'invalid shape viewBox';
+    }
+    if (typeof value.path !== 'string' || !value.path.trim()) return 'invalid shape path';
+    if (typeof value.fill !== 'string' || !value.fill.trim()) return 'invalid shape fill';
+    if (typeof value.fixedRatio !== 'boolean') return 'invalid shape fixed ratio';
+  }
+
+  if (element.type === 'chart') {
+    if (!RELIABLE_CHART_TYPES.has(String(value.chartType))) return 'unsupported chart type';
+    const data = value.data as Record<string, unknown> | undefined;
+    const labels = data?.labels;
+    const legends = data?.legends;
+    const series = data?.series;
+    if (!Array.isArray(labels) || labels.length < 2 || labels.length > 12) {
+      return 'invalid chart labels';
+    }
+    if (labels.some((label) => typeof label !== 'string')) return 'invalid chart label';
+    if (!Array.isArray(series) || series.length === 0 || series.length > 4) {
+      return 'invalid chart series';
+    }
+    if (!Array.isArray(legends) || legends.length !== series.length) {
+      return 'invalid chart legends';
+    }
+    if (legends.some((legend) => typeof legend !== 'string')) return 'invalid chart legend';
+    if (
+      series.some(
+        (items) =>
+          !Array.isArray(items) ||
+          items.length !== labels.length ||
+          items.some((item) => typeof item !== 'number' || !Number.isFinite(item)),
+      )
+    ) {
+      return 'invalid chart data';
+    }
+    if ((value.chartType === 'pie' || value.chartType === 'ring') && series.length !== 1) {
+      return 'part-to-whole chart must use one series';
+    }
+    if (!Array.isArray(value.themeColors) || value.themeColors.length === 0) {
+      return 'chart has no theme colors';
+    }
+  }
+
+  if (element.type === 'table') {
+    const rows = value.data;
+    const colWidths = value.colWidths;
+    if (!Array.isArray(rows) || rows.length < 2 || rows.length > 6) return 'invalid table rows';
+    if (!Array.isArray(colWidths) || colWidths.length < 2 || colWidths.length > 4) {
+      return 'invalid table columns';
+    }
+    if (colWidths.some((width) => typeof width !== 'number' || width <= 0)) {
+      return 'invalid table column widths';
+    }
+    const totalWidth = colWidths.reduce((sum, width) => sum + Number(width), 0);
+    if (totalWidth < 0.95 || totalWidth > 1.05) return 'table column widths must sum to one';
+    const cellIds = new Set<string>();
+    for (const row of rows) {
+      if (!Array.isArray(row)) return 'invalid table row';
+      const effectiveColumns = row.reduce((sum, cell) => {
+        if (!cell || typeof cell !== 'object') return sum;
+        const colspan = Number((cell as Record<string, unknown>).colspan || 1);
+        return sum + (Number.isInteger(colspan) && colspan > 0 ? colspan : 0);
+      }, 0);
+      if (effectiveColumns !== colWidths.length) return 'inconsistent table columns';
+      for (const cell of row) {
+        const record = cell as Record<string, unknown>;
+        if (
+          !record ||
+          typeof record.id !== 'string' ||
+          typeof record.text !== 'string' ||
+          !Number.isInteger(Number(record.colspan)) ||
+          !Number.isInteger(Number(record.rowspan))
+        ) {
+          return 'invalid table cell';
+        }
+        if (cellIds.has(record.id as string)) return 'duplicate table cell id';
+        cellIds.add(record.id as string);
+      }
+    }
+  }
+
+  if (element.type === 'code') {
+    const lines = value.lines;
+    if (!Array.isArray(lines) || lines.length === 0 || lines.length > 18) {
+      return 'invalid code lines';
+    }
+    if (
+      lines.some((line) => {
+        const record = line as Record<string, unknown>;
+        return !record || typeof record.id !== 'string' || typeof record.content !== 'string';
+      })
+    ) {
+      return 'invalid code line';
+    }
+    const fontSize = Number(value.fontSize || 16);
+    if (!Number.isFinite(fontSize) || fontSize < 14 || fontSize > 22) {
+      return 'invalid code font size';
+    }
+    if (typeof value.language !== 'string' || !value.language) return 'invalid code language';
+  }
+
+  if (element.type === 'latex' && typeof value.latex !== 'string') {
+    return 'invalid latex element';
+  }
+
+  return undefined;
+}
+
+function slideQualityIssue(data: GeneratedSlideData): string | undefined {
+  if (!Array.isArray(data.elements) || data.elements.length === 0) return 'no elements';
+  const focalMediaOnly =
+    data.elements.length === 1 &&
+    (data.elements[0].type === 'image' || data.elements[0].type === 'video') &&
+    data.elements[0].width * data.elements[0].height >=
+      SLIDE_CANVAS_WIDTH * SLIDE_CANVAS_HEIGHT * 0.3;
+  if (data.elements.length < 5 && !focalMediaOnly) {
+    return `too few elements (${data.elements.length}/5)`;
+  }
+  if (data.elements.length > SLIDE_MAX_ELEMENTS) {
+    return `too many elements (${data.elements.length}/${SLIDE_MAX_ELEMENTS})`;
+  }
+
+  const textElements: Array<GeneratedSlideData['elements'][number]> = [];
+  let visualElementCount = 0;
+
+  for (const element of data.elements) {
+    if (!SUPPORTED_SLIDE_ELEMENT_TYPES.has(String(element.type))) {
+      return `unsupported element type ${String(element.type)}`;
+    }
+    if (![element.left, element.top, element.width].every(Number.isFinite)) {
+      return `invalid geometry on ${element.type}`;
+    }
+
+    if (element.type === 'line') {
+      if (element.width < 1 || element.width > 6) return 'invalid line stroke width';
+      const line = element as Record<string, unknown>;
+      const start = line.start;
+      const end = line.end;
+      if (
+        !Array.isArray(start) ||
+        !Array.isArray(end) ||
+        start.length !== 2 ||
+        end.length !== 2 ||
+        [...start, ...end].some((point) => typeof point !== 'number' || !Number.isFinite(point))
+      ) {
+        return 'invalid line endpoints';
+      }
+      const absolutePoints = [
+        element.left + Number(start[0]),
+        element.top + Number(start[1]),
+        element.left + Number(end[0]),
+        element.top + Number(end[1]),
+      ];
+      if (
+        absolutePoints[0] < 0 ||
+        absolutePoints[0] > SLIDE_CANVAS_WIDTH ||
+        absolutePoints[1] < 0 ||
+        absolutePoints[1] > SLIDE_CANVAS_HEIGHT ||
+        absolutePoints[2] < 0 ||
+        absolutePoints[2] > SLIDE_CANVAS_WIDTH ||
+        absolutePoints[3] < 0 ||
+        absolutePoints[3] > SLIDE_CANVAS_HEIGHT
+      ) {
+        return 'off-canvas line';
+      }
+      visualElementCount++;
+      continue;
+    }
+
+    if (!Number.isFinite(element.height) || element.width <= 0 || element.height <= 0) {
+      return `invalid dimensions on ${element.type}`;
+    }
+    if (
+      element.left < 0 ||
+      element.top < 0 ||
+      element.left + element.width > SLIDE_CANVAS_WIDTH + 1 ||
+      element.top + element.height > SLIDE_CANVAS_HEIGHT + 1
+    ) {
+      return `off-canvas ${element.type}`;
+    }
+
+    const structuredIssue = structuredElementQualityIssue(element);
+    if (structuredIssue) return structuredIssue;
+
+    if (element.type !== 'text') {
+      visualElementCount++;
+      continue;
+    }
+    textElements.push(element);
+    const content = String((element as Record<string, unknown>).content || '');
+    const plainText = content
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!plainText) return 'empty text element';
+    if (plainText.length > 320) return 'text element is too dense';
+
+    const fontSizes = [...content.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi)].map((match) =>
+      Number(match[1]),
+    );
+    if (fontSizes.some((size) => size < 14)) return 'text smaller than 14px';
+  }
+
+  if (textElements.length > SLIDE_MAX_TEXT_ELEMENTS) {
+    return `too many text elements (${textElements.length}/${SLIDE_MAX_TEXT_ELEMENTS})`;
+  }
+  if (visualElementCount === 0) return 'no visual structure';
+
+  for (let i = 0; i < textElements.length; i++) {
+    const a = textElements[i];
+    for (let j = i + 1; j < textElements.length; j++) {
+      const b = textElements[j];
+      const overlapWidth = Math.max(
+        0,
+        Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left),
+      );
+      const overlapHeight = Math.max(
+        0,
+        Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top),
+      );
+      const overlapArea = overlapWidth * overlapHeight;
+      const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+      if (smallerArea > 0 && overlapArea / smallerArea > 0.15) {
+        return 'overlapping text elements';
+      }
+    }
+  }
+
+  return undefined;
+}
+
 async function generateSlideContent(
   outline: SceneOutline,
   aiCall: AICallFn,
@@ -697,6 +1710,7 @@ async function generateSlideContent(
   languageDirective?: string,
   editDirective?: string,
   baselineContent?: GeneratedSlideContent,
+  allOutlines?: SceneOutline[],
 ): Promise<GeneratedSlideContent | null> {
   // Build assigned images description for the prompt
   let assignedImagesText = '无可用图片，禁止插入任何 image 元素';
@@ -769,6 +1783,7 @@ async function generateSlideContent(
   const canvasHeight = 562.5;
 
   const teacherContext = formatTeacherPersonaForPrompt(agents);
+  const slideDesignBrief = buildSlideDesignBrief(outline, allOutlines);
 
   const prompts = buildPrompt(PROMPT_IDS.SLIDE_CONTENT, {
     title: outline.title,
@@ -780,6 +1795,7 @@ async function generateSlideContent(
     canvas_height: canvasHeight,
     teacherContext,
     languageDirective: languageDirective || '',
+    slideDesignBrief,
     imageElementEnabled,
     generatedImageEnabled,
     generatedVideoEnabled,
@@ -834,11 +1850,37 @@ async function generateSlideContent(
   }
 
   const response = await aiCall(prompts.system, userPrompt, visionImages);
-  const generatedData = parseJsonResponse<GeneratedSlideData>(response);
+  let generatedData: GeneratedSlideData;
 
-  if (!generatedData || !generatedData.elements || !Array.isArray(generatedData.elements)) {
-    log.error(`Failed to parse AI response for: ${outline.title}`);
-    return null;
+  if (!hasCompleteJsonEnvelope(response)) {
+    generatedData = buildReliableSlideFallback(
+      outline,
+      'model response was incomplete',
+      allOutlines,
+    );
+  } else {
+    const parsed = parseJsonResponse<GeneratedSlideData>(response);
+    if (!parsed) {
+      generatedData = buildReliableSlideFallback(
+        outline,
+        'model response was not valid JSON',
+        allOutlines,
+      );
+    } else {
+      const parsedElements =
+        Array.isArray(parsed.elements) &&
+        parsed.elements.every((element) => element && typeof element === 'object')
+          ? parsed.elements
+          : [];
+      const normalized = {
+        ...parsed,
+        elements: fixElementDefaults(parsedElements, assignedImages),
+      };
+      const qualityIssue = slideQualityIssue(normalized);
+      generatedData = qualityIssue
+        ? buildReliableSlideFallback(outline, qualityIssue, allOutlines)
+        : normalized;
+    }
   }
 
   log.debug(`Got ${generatedData.elements.length} elements for: ${outline.title}`);
@@ -874,11 +1916,24 @@ async function generateSlideContent(
   );
   log.debug(`After image resolution: ${resolvedElements.length} elements`);
 
-  const videoNormalizedElements = normalizeGeneratedVideoRefs(
+  let videoNormalizedElements = normalizeGeneratedVideoRefs(
     resolvedElements,
     outline.mediaGenerations,
   );
   log.debug(`After video reference normalization: ${videoNormalizedElements.length} elements`);
+
+  const postProcessingIssue = slideQualityIssue({
+    ...generatedData,
+    elements: videoNormalizedElements,
+  });
+  if (postProcessingIssue) {
+    generatedData = buildReliableSlideFallback(
+      outline,
+      `post-processing quality issue: ${postProcessingIssue}`,
+      allOutlines,
+    );
+    videoNormalizedElements = fixElementDefaults(generatedData.elements);
+  }
 
   // Process elements, assign unique IDs
   const processedElements: PPTElement[] = videoNormalizedElements.map((el) => ({
@@ -1141,37 +2196,96 @@ async function generatePBLSceneContent(
 
 /**
  * Extract HTML document from AI response.
- * Tries to find <!DOCTYPE html>...</html> first, then falls back to code block extraction.
+ * Only accepts a complete document so a truncated interactive response cannot
+ * be persisted as a working widget.
  */
+function isCompleteHtmlDocument(candidate: string): boolean {
+  const html = candidate.trim();
+  const htmlOpenMatches = [...html.matchAll(/<html(?:\s[^>]*)?>/gi)];
+  const htmlCloseMatches = [...html.matchAll(/<\/html\s*>/gi)];
+  const bodyOpenMatches = [...html.matchAll(/<body(?:\s[^>]*)?>/gi)];
+  const bodyCloseMatches = [...html.matchAll(/<\/body\s*>/gi)];
+
+  if (
+    htmlOpenMatches.length !== 1 ||
+    htmlCloseMatches.length !== 1 ||
+    bodyOpenMatches.length !== 1 ||
+    bodyCloseMatches.length !== 1
+  ) {
+    return false;
+  }
+
+  const htmlOpen = htmlOpenMatches[0];
+  const htmlClose = htmlCloseMatches[0];
+  const bodyOpen = bodyOpenMatches[0];
+  const bodyClose = bodyCloseMatches[0];
+  const htmlOpenIndex = htmlOpen.index ?? -1;
+  const htmlCloseIndex = htmlClose.index ?? -1;
+  const bodyOpenIndex = bodyOpen.index ?? -1;
+  const bodyCloseIndex = bodyClose.index ?? -1;
+
+  if (
+    htmlOpenIndex < 0 ||
+    htmlOpenIndex >= bodyOpenIndex ||
+    bodyOpenIndex >= bodyCloseIndex ||
+    bodyCloseIndex >= htmlCloseIndex ||
+    htmlCloseIndex + htmlClose[0].length !== html.length
+  ) {
+    return false;
+  }
+
+  const prefix = html
+    .slice(0, htmlOpenIndex)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .trim();
+  if (prefix && !/^<!doctype\s+html(?:\s[^>]*)?>$/i.test(prefix)) return false;
+
+  const headOpenMatches = [...html.matchAll(/<head(?:\s[^>]*)?>/gi)];
+  const headCloseMatches = [...html.matchAll(/<\/head\s*>/gi)];
+  if (headOpenMatches.length !== headCloseMatches.length || headOpenMatches.length > 1) {
+    return false;
+  }
+  if (headOpenMatches.length === 1) {
+    const headOpenIndex = headOpenMatches[0].index ?? -1;
+    const headCloseIndex = headCloseMatches[0].index ?? -1;
+    if (
+      headOpenIndex <= htmlOpenIndex ||
+      headOpenIndex >= headCloseIndex ||
+      headCloseIndex >= bodyOpenIndex
+    ) {
+      return false;
+    }
+  }
+
+  for (const tag of ['script', 'style']) {
+    const openCount = [...html.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>`, 'gi'))].length;
+    const closeCount = [...html.matchAll(new RegExp(`</${tag}\\s*>`, 'gi'))].length;
+    if (openCount !== closeCount) return false;
+  }
+
+  return true;
+}
+
 function extractHtml(response: string): string | null {
-  // Strategy 1: Find complete HTML document
-  const doctypeStart = response.indexOf('<!DOCTYPE html>');
-  const htmlTagStart = response.indexOf('<html');
-  const start = doctypeStart !== -1 ? doctypeStart : htmlTagStart;
+  const doctypeMatch = /<!doctype\s+html(?:\s[^>]*)?>/i.exec(response);
+  const htmlMatch = /<html(?:\s[^>]*)?>/i.exec(response);
+  const doctypeStart = doctypeMatch?.index ?? -1;
+  const htmlTagStart = htmlMatch?.index ?? -1;
+  const start =
+    doctypeStart !== -1 && (htmlTagStart === -1 || doctypeStart < htmlTagStart)
+      ? doctypeStart
+      : htmlTagStart;
 
   if (start !== -1) {
-    const htmlEnd = response.lastIndexOf('</html>');
-    if (htmlEnd !== -1) {
-      return response.substring(start, htmlEnd + 7);
+    const closingTags = [...response.matchAll(/<\/html\s*>/gi)];
+    const lastClosingTag = closingTags.at(-1);
+    if (lastClosingTag?.index !== undefined) {
+      const candidate = response.substring(start, lastClosingTag.index + lastClosingTag[0].length);
+      if (isCompleteHtmlDocument(candidate)) return candidate;
     }
   }
 
-  // Strategy 2: Extract from code block
-  const codeBlockMatch = response.match(/```(?:html)?\s*([\s\S]*?)```/);
-  if (codeBlockMatch) {
-    const content = codeBlockMatch[1].trim();
-    if (content.includes('<html') || content.includes('<!DOCTYPE')) {
-      return content;
-    }
-  }
-
-  // Strategy 3: If response itself looks like HTML
-  const trimmed = response.trim();
-  if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
-    return trimmed;
-  }
-
-  log.error('Could not extract HTML from response');
+  log.error('Could not extract a complete HTML document from response');
   log.error('Response preview:', response.substring(0, 200));
   return null;
 }
@@ -1375,8 +2489,19 @@ export async function generateSceneActions(
     const actions = parseActionsFromStructuredOutput(response, outline.type);
 
     if (actions.length > 0) {
-      // Validate and fill in Action IDs
-      return processActions(actions, content.elements, agents);
+      // Validate and fill in Action IDs. A slide without narration cannot
+      // produce managed TTS audio, so preserve the model's visual actions but
+      // add the reliable narration fallback when speech is missing or empty.
+      const processedActions = processActions(actions, content.elements, agents);
+      if (processedActions.some(hasUsableSpeechAction)) return processedActions;
+
+      log.warn(`Slide actions for "${outline.title}" contained no usable speech; adding fallback`);
+      return [
+        ...processedActions.filter(
+          (action) => action.type !== 'speech' || hasUsableSpeechAction(action),
+        ),
+        ...generateDefaultSlideActions(outline, content.elements).filter(hasUsableSpeechAction),
+      ];
     }
 
     return generateDefaultSlideActions(outline, content.elements);
@@ -1579,6 +2704,12 @@ function processActions(actions: Action[], elements: PPTElement[], agents?: Agen
 
     return processedAction;
   });
+}
+
+function hasUsableSpeechAction(action: Action): boolean {
+  return (
+    action.type === 'speech' && typeof action.text === 'string' && action.text.trim().length > 0
+  );
 }
 
 /**

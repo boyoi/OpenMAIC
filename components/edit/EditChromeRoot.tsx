@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { EditShell } from '@/components/edit/EditShell';
 import { SlideNavRail } from '@/components/edit/SlideNavRail';
 import { AgentPanel } from '@/components/edit/AgentPanel/AgentPanel';
@@ -12,11 +13,18 @@ import { preloadEditor } from '@/lib/edit/preload-editor';
 import { sceneEditorRegistry } from '@/lib/edit/scene-editor-registry';
 import type { Scene } from '@/lib/types/stage';
 import { shouldRenderAgentPanel } from './agent-panel-visibility';
+import { useI18n } from '@/lib/hooks/use-i18n';
+import {
+  claimSceneFeedbackIntent,
+  type SceneFeedbackIntent,
+} from '@/lib/agent/client/scene-feedback';
 
 interface EditChromeRootProps {
   readonly scene: Scene;
   readonly isEditable: boolean;
   readonly onToggleEditMode?: () => void;
+  readonly pendingSceneFeedback?: SceneFeedbackIntent | null;
+  readonly onSceneFeedbackConsumed?: (intentId: string) => void;
 }
 
 /**
@@ -39,7 +47,14 @@ interface EditChromeRootProps {
  * `scene` is required (non-null). The parent gates mounting on
  * `mode === 'edit' && currentScene` to satisfy this contract.
  */
-export function EditChromeRoot({ scene, isEditable, onToggleEditMode }: EditChromeRootProps) {
+export function EditChromeRoot({
+  scene,
+  isEditable,
+  onToggleEditMode,
+  pendingSceneFeedback,
+  onSceneFeedbackConsumed,
+}: EditChromeRootProps) {
+  const { t } = useI18n();
   // Mark the body while edit mode is mounted, so the editor-scoped CSS
   // rule in globals.css that pins `body.padding-right` to 0 only fires
   // in Pro mode — not on non-editor pages where Radix's
@@ -82,11 +97,50 @@ export function EditChromeRoot({ scene, isEditable, onToggleEditMode }: EditChro
     scene: agentEnabled ? { id: scene.id, title: scene.title } : undefined,
     isSendDisabled: !agentEnabled,
   });
+  const consumedSceneFeedbackIds = useRef(new Set<string>());
+  useEffect(() => {
+    if (pendingSceneFeedback && pendingSceneFeedback.sceneId !== scene.id) {
+      onSceneFeedbackConsumed?.(pendingSceneFeedback.id);
+      return;
+    }
+    if (
+      !agentEnabled ||
+      !claimSceneFeedbackIntent(pendingSceneFeedback, scene.id, consumedSceneFeedbackIds.current)
+    ) {
+      return;
+    }
+    try {
+      agentRuntime.runtime.thread.append({
+        role: 'user',
+        content: [{ type: 'text', text: pendingSceneFeedback.prompt }],
+      });
+      onSceneFeedbackConsumed?.(pendingSceneFeedback.id);
+    } catch (error) {
+      consumedSceneFeedbackIds.current.delete(pendingSceneFeedback.id);
+      onSceneFeedbackConsumed?.(pendingSceneFeedback.id);
+      toast.error(t('stage.feedback.error'));
+      console.error('[EditChromeRoot] Failed to submit scene feedback', error);
+    }
+  }, [
+    agentEnabled,
+    agentRuntime.runtime,
+    onSceneFeedbackConsumed,
+    pendingSceneFeedback,
+    scene.id,
+    t,
+  ]);
   const showAgentPanel = shouldRenderAgentPanel({
     agentEnabled,
     hasMessages: agentRuntime.hasMessages,
     isRunning: agentRuntime.isRunning,
   });
+  const handleToggleEditMode = useCallback(() => {
+    // Abort + invalidate before Stage flips mode and releases the edit lock.
+    // The normal AgentPanel stop button still uses cancelRun so it can preserve
+    // the partial response; this path is specifically for leaving Pro mode.
+    agentRuntime.cancelAndInvalidate();
+    onToggleEditMode?.();
+  }, [agentRuntime, onToggleEditMode]);
 
   return (
     <EditShell
@@ -108,7 +162,7 @@ export function EditChromeRoot({ scene, isEditable, onToggleEditMode }: EditChro
         <HeaderControls
           mode="edit"
           canEdit={isEditable}
-          onToggleEditMode={isMaicEditorEnabled() ? onToggleEditMode : undefined}
+          onToggleEditMode={isMaicEditorEnabled() ? handleToggleEditMode : undefined}
         />
       }
     />

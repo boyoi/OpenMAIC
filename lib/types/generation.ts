@@ -103,6 +103,10 @@ export interface SceneOutline {
   suggestedImageIds?: string[]; // e.g., ["img_1", "img_3"]
   // AI-generated media requests (when PDF images are insufficient)
   mediaGenerations?: MediaGenerationRequest[]; // e.g., [{ type: 'image', prompt: '...', elementId: 'gen_img_1' }]
+  /** Semantic purpose for a slide. Optional for backward compatibility. */
+  slideIntent?: SlideIntent;
+  /** Content-specific visual artifact/layout guidance, not generic style adjectives. */
+  visualBrief?: string;
   // Quiz-specific config
   quizConfig?: {
     questionCount: number;
@@ -134,6 +138,20 @@ export interface SceneOutline {
   widgetType?: WidgetType;
   widgetOutline?: WidgetOutline;
 }
+
+export type SlideIntent =
+  | 'cover'
+  | 'concept'
+  | 'process'
+  | 'comparison'
+  | 'timeline'
+  | 'architecture'
+  | 'data'
+  | 'code'
+  | 'worked-example'
+  | 'case-study'
+  | 'decision'
+  | 'summary';
 
 // ==================== Stage 3 Output: Generated Content ====================
 

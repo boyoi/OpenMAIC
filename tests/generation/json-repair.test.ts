@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseJsonResponse } from '@/lib/generation/json-repair';
+import { hasCompleteJsonEnvelope, parseJsonResponse } from '@/lib/generation/json-repair';
+
+describe('JSON envelope completeness', () => {
+  it('accepts balanced JSON with braces inside strings', () => {
+    expect(hasCompleteJsonEnvelope('{"elements":[{"content":"<p>{example}</p>"}]}')).toBe(true);
+  });
+
+  it('rejects a response cut off inside a nested element', () => {
+    expect(hasCompleteJsonEnvelope('{"elements":[{"type":"text","content":"partial')).toBe(false);
+  });
+});
 
 describe('json-repair targeted fixes', () => {
   it('repairs quoted key-value fragments such as "height: 76"', () => {

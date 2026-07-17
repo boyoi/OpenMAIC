@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SceneOutline } from '@/lib/types/generation';
 
 const mocks = vi.hoisted(() => ({
-  callLLM: vi.fn(),
+  collectStreamedLLMText: vi.fn(),
   resolveModelFromRequest: vi.fn(),
   applyOutlineFallbacks: vi.fn(),
   generateSceneContent: vi.fn(),
@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/ai/llm', () => ({
-  callLLM: mocks.callLLM,
+  collectStreamedLLMText: mocks.collectStreamedLLMText,
 }));
 
 vi.mock('@/lib/server/resolve-model', () => ({
@@ -62,7 +62,7 @@ describe('scene API retry boundary', () => {
       thinkingConfig: undefined,
     });
     mocks.applyOutlineFallbacks.mockImplementation((value) => value);
-    mocks.callLLM.mockResolvedValue({ text: 'ok' });
+    mocks.collectStreamedLLMText.mockResolvedValue('ok');
     mocks.resolveVocationalActive.mockReturnValue(false);
   });
 
@@ -78,7 +78,8 @@ describe('scene API retry boundary', () => {
     const body = await response.json();
 
     expect(body.success).toBe(true);
-    expect(mocks.callLLM.mock.calls[0][0].maxRetries).toBe(0);
+    expect(mocks.collectStreamedLLMText.mock.calls[0][0].maxRetries).toBe(0);
+    expect(mocks.collectStreamedLLMText.mock.calls[0][0].abortSignal).toBeDefined();
   });
 
   it('disables AI SDK retries for scene-actions model calls', async () => {
@@ -105,7 +106,8 @@ describe('scene API retry boundary', () => {
     const body = await response.json();
 
     expect(body.success).toBe(true);
-    expect(mocks.callLLM.mock.calls[0][0].maxRetries).toBe(0);
+    expect(mocks.collectStreamedLLMText.mock.calls[0][0].maxRetries).toBe(0);
+    expect(mocks.collectStreamedLLMText.mock.calls[0][0].abortSignal).toBeDefined();
   });
 
   it('preserves an upstream 401 from the scene-content route', async () => {
@@ -115,7 +117,7 @@ describe('scene API retry boundary', () => {
       await aiCall('system', 'user');
       return { elements: [], remark: 'ok' };
     });
-    mocks.callLLM.mockRejectedValueOnce(unauthorized);
+    mocks.collectStreamedLLMText.mockRejectedValueOnce(unauthorized);
 
     const { POST } = await import('@/app/api/generate/scene-content/route');
     const response = await POST(mockRequest());
@@ -136,7 +138,7 @@ describe('scene API retry boundary', () => {
       await aiCall('system', 'user');
       return { elements: [], remark: 'ok' };
     });
-    mocks.callLLM.mockRejectedValueOnce(unavailable);
+    mocks.collectStreamedLLMText.mockRejectedValueOnce(unavailable);
 
     const { POST } = await import('@/app/api/generate/scene-content/route');
     const response = await POST(mockRequest());
@@ -157,7 +159,7 @@ describe('scene API retry boundary', () => {
       await aiCall('system', 'user');
       return [];
     });
-    mocks.callLLM.mockRejectedValueOnce(unauthorized);
+    mocks.collectStreamedLLMText.mockRejectedValueOnce(unauthorized);
 
     const { POST } = await import('@/app/api/generate/scene-actions/route');
     const response = await POST(mockRequest({ content: { elements: [], remark: 'ok' } }));
@@ -178,7 +180,7 @@ describe('scene API retry boundary', () => {
       await aiCall('system', 'user');
       return [];
     });
-    mocks.callLLM.mockRejectedValueOnce(unavailable);
+    mocks.collectStreamedLLMText.mockRejectedValueOnce(unavailable);
 
     const { POST } = await import('@/app/api/generate/scene-actions/route');
     const response = await POST(mockRequest({ content: { elements: [], remark: 'ok' } }));
@@ -195,6 +197,7 @@ describe('scene API retry boundary', () => {
 
 function mockRequest(extraBody: Record<string, unknown> = {}) {
   return {
+    signal: new AbortController().signal,
     json: async () => ({
       outline,
       allOutlines: [outline],

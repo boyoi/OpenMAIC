@@ -368,6 +368,30 @@ describe('fetchServerProviders — provider availability sync', () => {
     expect(models[1].name).toBe('GPT-4o');
   });
 
+  it('restores built-in metadata when persisted provider models are stale', async () => {
+    const store = await getStore();
+    store.setState((state) => ({
+      modelId: 'gpt-4o-mini',
+      providersConfig: {
+        ...state.providersConfig,
+        openai: {
+          ...state.providersConfig.openai,
+          models: [{ id: 'gpt-4o-mini', name: 'GPT-4o Mini' }],
+        },
+      },
+    }));
+    mockServerResponse({ providers: { openai: { models: ['gpt-4o'] } } });
+
+    await store.getState().fetchServerProviders();
+
+    expect(store.getState().providerId).toBe('openai');
+    expect(store.getState().modelId).toBe('gpt-4o');
+    expect(store.getState().providersConfig.openai.models[0]).toMatchObject({
+      id: 'gpt-4o',
+      name: 'GPT-4o',
+    });
+  });
+
   it('keeps all models when server provides no model restriction', async () => {
     const store = await getStore();
     mockServerResponse({
@@ -1519,29 +1543,30 @@ describe('TTS provider enablement (#665)', () => {
     return useSettingsStore;
   }
 
-  it('browser-native TTS is OFF by default (fresh install, opt-in)', async () => {
+  it('browser-native TTS is enabled by default as the zero-config fallback', async () => {
     const store = await getStore();
-    expect(store.getState().ttsProvidersConfig['browser-native-tts'].enabled).toBe(false);
+    expect(store.getState().ttsProvidersConfig['browser-native-tts'].enabled).toBe(true);
   });
 
-  it('TTS master toggle is OFF by default on a fresh install', async () => {
+  it('TTS master toggle is ON by default on a fresh install', async () => {
     const store = await getStore();
-    expect(store.getState().ttsEnabled).toBe(false);
+    expect(store.getState().ttsEnabled).toBe(true);
   });
 
   it('first server-sync auto-enables TTS when a server provider exists', async () => {
     mockServerResponse({ tts: { 'openai-tts': {} } });
     const store = await getStore();
-    expect(store.getState().ttsEnabled).toBe(false);
+    expect(store.getState().ttsEnabled).toBe(true);
     await store.getState().fetchServerProviders();
     expect(store.getState().ttsEnabled).toBe(true);
   });
 
-  it('server-sync does NOT auto-enable TTS when no provider is configured', async () => {
+  it('server-sync keeps browser-native TTS enabled when no server provider exists', async () => {
     mockServerResponse({ tts: {} });
     const store = await getStore();
     await store.getState().fetchServerProviders();
-    expect(store.getState().ttsEnabled).toBe(false);
+    expect(store.getState().ttsEnabled).toBe(true);
+    expect(store.getState().ttsProviderId).toBe('browser-native-tts');
   });
 
   it('non-browser-native built-ins default enabled:true (configured ⇒ visible)', async () => {
@@ -1551,7 +1576,7 @@ describe('TTS provider enablement (#665)', () => {
     expect(store.getState().ttsProvidersConfig['azure-tts'].enabled).toBe(true);
   });
 
-  it('v3→v4 migration normalizes stale enabled flags (others ON, browser-native OFF)', async () => {
+  it('v3→v5 migration enables browser-native narration', async () => {
     storage.set(
       'settings-storage',
       JSON.stringify({
@@ -1561,8 +1586,7 @@ describe('TTS provider enablement (#665)', () => {
             'openai-tts': { apiKey: '', baseUrl: '', enabled: true },
             // stale default-false on a configured-capable provider — must flip ON
             'azure-tts': { apiKey: '', baseUrl: '', enabled: false },
-            // legacy default-true browser-native — must flip OFF
-            'browser-native-tts': { apiKey: '', baseUrl: '', enabled: true },
+            'browser-native-tts': { apiKey: '', baseUrl: '', enabled: false },
           },
           asrProvidersConfig: {},
         },
@@ -1571,7 +1595,39 @@ describe('TTS provider enablement (#665)', () => {
     const store = await getStore();
     const cfg = store.getState().ttsProvidersConfig;
     expect(cfg['azure-tts'].enabled).toBe(true);
-    expect(cfg['browser-native-tts'].enabled).toBe(false);
+    expect(cfg['browser-native-tts'].enabled).toBe(true);
+    expect(store.getState().ttsProviderId).toBe('browser-native-tts');
+    expect(store.getState().ttsEnabled).toBe(true);
+  });
+
+  it('v4→v5 migration replaces an unavailable localhost TTS provider', async () => {
+    storage.set(
+      'settings-storage',
+      JSON.stringify({
+        version: 4,
+        state: {
+          ttsProviderId: 'openai-tts',
+          ttsVoice: 'alloy',
+          ttsEnabled: true,
+          ttsProvidersConfig: {
+            'openai-tts': {
+              apiKey: '',
+              baseUrl: 'http://127.0.0.1:13305/v1',
+              enabled: true,
+            },
+            'browser-native-tts': { apiKey: '', baseUrl: '', enabled: false },
+          },
+          asrProvidersConfig: {},
+        },
+      }),
+    );
+
+    const store = await getStore();
+
+    expect(store.getState().ttsProviderId).toBe('browser-native-tts');
+    expect(store.getState().ttsVoice).toBe('default');
+    expect(store.getState().ttsEnabled).toBe(true);
+    expect(store.getState().ttsProvidersConfig['browser-native-tts'].enabled).toBe(true);
   });
 
   it('server force-disable sets serverDisabled and does NOT mark the provider managed', async () => {

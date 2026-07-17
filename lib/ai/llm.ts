@@ -152,6 +152,9 @@ function buildThinkingProviderOptions(
   switch (thinking.requestAdapter) {
     case 'openai': {
       const effort = pickThinkingEffort(thinking, config);
+      // @ai-sdk/openai's chat schema currently stops at `xhigh`. Models that
+      // support `max` inject it through the request fetch wrapper instead.
+      if (effort === 'max') return undefined;
       return effort ? { openai: { reasoningEffort: effort } } : undefined;
     }
 
@@ -349,4 +352,67 @@ export function streamLLM<T extends StreamTextParams>(
   const result = thinkingContext.run(effectiveThinking, () => streamText(injectedParams));
 
   return result;
+}
+
+/**
+ * Run a streaming LLM request and collect all text deltas into one string.
+ *
+ * This is useful for JSON/HTML generation that must be parsed only after the
+ * full response is available, while still establishing upstream response
+ * headers as soon as the provider starts streaming.
+ */
+export async function collectStreamedLLMText<T extends StreamTextParams>(
+  params: T,
+  source: string,
+  thinking?: ThinkingConfig,
+): Promise<string> {
+  const result = streamLLM(params, source, thinking);
+  let text = '';
+  let finished = false;
+
+  for await (const part of result.fullStream) {
+    if (part.type === 'text-delta') {
+      text += part.text;
+      continue;
+    }
+
+    if (part.type === 'error') {
+      throw part.error instanceof Error
+        ? part.error
+        : new Error(`[${source}] LLM stream failed: ${String(part.error)}`);
+    }
+
+    if (part.type === 'abort') {
+      const error = new Error(
+        `[${source}] LLM stream was aborted${part.reason ? `: ${part.reason}` : ''}`,
+      );
+      error.name = 'AbortError';
+      throw error;
+    }
+
+    if (part.type === 'finish-step' && part.finishReason === 'error') {
+      throw new Error(
+        `[${source}] LLM stream step finished with an error${
+          part.rawFinishReason ? `: ${part.rawFinishReason}` : ''
+        }`,
+      );
+    }
+
+    if (part.type === 'finish') {
+      if (part.finishReason === 'error') {
+        throw new Error(
+          `[${source}] LLM stream finished with an error${
+            part.rawFinishReason ? `: ${part.rawFinishReason}` : ''
+          }`,
+        );
+      }
+      finished = true;
+    }
+  }
+
+  if (!finished) {
+    throw new Error(`[${source}] LLM stream ended before a finish event`);
+  }
+
+  return text;
 }

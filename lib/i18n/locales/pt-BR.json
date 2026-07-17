@@ -46,6 +46,7 @@
     "exportFailed": "Falha na exportação",
     "classroomZip": "Exportar ZIP da Sala",
     "classroomZipDesc": "Estrutura do curso + arquivos de mídia",
+    "partialWarning": "A geração ainda não foi concluída. Esta exportação inclui apenas o conteúdo concluído até agora; cenas ou mídias inacabadas serão omitidas.",
     "inlinePartial": "{{count}} recurso(s) externo(s) não puderam ser empacotados; o curso pode não ser exibido corretamente offline."
   },
   "import": {
@@ -410,7 +411,23 @@
     "exitFullscreen": "Sair da tela cheia",
     "editCourse": "Editar curso",
     "doneEditing": "Concluir edição",
-    "proModeDisabledHint": "A edição não está disponível nesta página — abra um slide do curso para editar no modo Pro."
+    "proModeDisabledHint": "A edição não está disponível nesta página — abra um slide do curso para editar no modo Pro.",
+    "feedback": {
+      "button": "Relatar problema",
+      "buttonTitle": "Relatar um problema desta página à IA",
+      "title": "Relatar problema na página",
+      "descriptionInteractive": "Descreva o que não funciona. Ao enviar, o modo Pro será aberto para a IA ler os erros de execução e alterar apenas o código necessário.",
+      "descriptionSlide": "Descreva o problema de conteúdo ou layout. A IA recriará este slide, então detalhes da página e narração podem mudar.",
+      "fieldLabel": "Qual é o problema?",
+      "placeholder": "Exemplo: o botão Iniciar não responde; a segunda linha está coberta…",
+      "runtimeErrors": "{{count}} erro(s) de execução detectado(s); eles serão enviados à IA.",
+      "submit": "Pedir correção à IA",
+      "entering": "Abrindo correção por IA…",
+      "error": "Não foi possível iniciar a correção. Tente novamente.",
+      "empty": "Descreva o problema primeiro.",
+      "agentPromptInteractive": "Relato de problema da página: {{report}}\nCorrija agora a página interativa atual. Primeiro leia o conteúdo da página e os erros de execução. Verifique também seletores dos controles, vínculos de eventos, inicialização, estado disabled e camadas sobrepostas, pois um controle sem resposta pode não gerar erro. Faça apenas as alterações pontuais necessárias em HTML/JavaScript e preserve todo o restante do conteúdo e das interações; não apenas explique. Depois de aplicar a correção, resuma o que mudou e peça que eu clique novamente para verificar.",
+      "agentPromptSlide": "Relato de problema da página: {{report}}\nAutorizo a recriação do slide atual com base neste relato. Primeiro leia a página atual e então recrie diretamente seu conteúdo e narração para resolver o problema; não apenas explique. Resuma o que mudou e lembre-me de revisar a página."
+    }
   },
   "classroomComplete": {
     "title": "Curso concluído",

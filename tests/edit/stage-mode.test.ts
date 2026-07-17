@@ -38,6 +38,8 @@ describe('isCurrentSceneEditable', () => {
         currentSceneId: 'scene-1',
         sceneCount: 3,
         generatingOutlineCount: 0,
+        generationStatus: 'completed',
+        canPauseGeneration: true,
         hasCurrentScene: true,
       }),
     ).toBe(true);
@@ -49,6 +51,8 @@ describe('isCurrentSceneEditable', () => {
         currentSceneId: PENDING_SCENE_ID,
         sceneCount: 3,
         generatingOutlineCount: 0,
+        generationStatus: 'completed',
+        canPauseGeneration: true,
         hasCurrentScene: true,
       }),
     ).toBe(false);
@@ -60,6 +64,8 @@ describe('isCurrentSceneEditable', () => {
         currentSceneId: null,
         sceneCount: 0,
         generatingOutlineCount: 0,
+        generationStatus: 'idle',
+        canPauseGeneration: true,
         hasCurrentScene: false,
       }),
     ).toBe(false);
@@ -71,9 +77,50 @@ describe('isCurrentSceneEditable', () => {
         currentSceneId: 'scene-1',
         sceneCount: 1,
         generatingOutlineCount: 2,
+        generationStatus: 'generating',
+        canPauseGeneration: false,
         hasCurrentScene: true,
       }),
     ).toBe(false);
+  });
+
+  test('returns true while generation is running when entering edit mode can pause it', () => {
+    expect(
+      isCurrentSceneEditable({
+        currentSceneId: 'scene-1',
+        sceneCount: 1,
+        generatingOutlineCount: 2,
+        generationStatus: 'generating',
+        canPauseGeneration: true,
+        hasCurrentScene: true,
+      }),
+    ).toBe(true);
+  });
+
+  test('returns true for a completed scene when remaining generation is paused', () => {
+    expect(
+      isCurrentSceneEditable({
+        currentSceneId: 'scene-1',
+        sceneCount: 1,
+        generatingOutlineCount: 2,
+        generationStatus: 'paused',
+        canPauseGeneration: false,
+        hasCurrentScene: true,
+      }),
+    ).toBe(true);
+  });
+
+  test('returns true for a completed scene when remaining generation errored', () => {
+    expect(
+      isCurrentSceneEditable({
+        currentSceneId: 'scene-1',
+        sceneCount: 1,
+        generatingOutlineCount: 2,
+        generationStatus: 'error',
+        canPauseGeneration: false,
+        hasCurrentScene: true,
+      }),
+    ).toBe(true);
   });
 
   test('returns false when current scene id does not resolve to a scene', () => {
@@ -82,6 +129,8 @@ describe('isCurrentSceneEditable', () => {
         currentSceneId: 'scene-x',
         sceneCount: 3,
         generatingOutlineCount: 0,
+        generationStatus: 'completed',
+        canPauseGeneration: true,
         hasCurrentScene: false,
       }),
     ).toBe(false);

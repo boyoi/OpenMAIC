@@ -246,6 +246,7 @@ export function makeRegenerateSceneTool(
         baselineContent: editBaseline,
         assignedImages,
         imageMapping,
+        allOutlines,
       });
 
       if (!newContent || !('elements' in newContent)) {

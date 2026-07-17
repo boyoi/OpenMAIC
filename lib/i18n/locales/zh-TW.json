@@ -46,6 +46,7 @@
     "exportFailed": "匯出失敗",
     "classroomZip": "匯出課堂 ZIP",
     "classroomZipDesc": "課程結構 + 媒體檔案",
+    "partialWarning": "生成尚未完成，本次只會匯出目前已完成的內容；未完成的場景或媒體不會包含在檔案中。",
     "inlinePartial": "{{count}} 個外部資源未能打包，離線時課程可能無法正常顯示。"
   },
   "import": {
@@ -158,7 +159,23 @@
     "courseComplete": "課程完成",
     "editCourse": "編輯課程",
     "doneEditing": "完成編輯",
-    "proModeDisabledHint": "本頁不支援編輯——開啟任一課程頁即可使用 Pro 模式編輯。"
+    "proModeDisabledHint": "本頁不支援編輯——開啟任一課程頁即可使用 Pro 模式編輯。",
+    "feedback": {
+      "button": "回報問題",
+      "buttonTitle": "向 AI 回報目前頁面的問題",
+      "title": "回報目前頁面問題",
+      "descriptionInteractive": "描述哪裡不正常。送出後將進入專業模式，AI 會讀取執行錯誤並只修改必要程式碼。",
+      "descriptionSlide": "描述內容或排版問題。送出後 AI 會重新生成本頁，頁面細節和講解可能會改變。",
+      "fieldLabel": "問題描述",
+      "placeholder": "例如：點擊「開始」沒有反應；第二行文字被遮住……",
+      "runtimeErrors": "已偵測到 {{count}} 條執行錯誤，將一併提供給 AI。",
+      "submit": "交給 AI 修復",
+      "entering": "正在開啟 AI 修復…",
+      "error": "無法啟動修復，請稍後再試。",
+      "empty": "請先描述問題。",
+      "agentPromptInteractive": "本頁問題回報：{{report}}\n請直接修復目前互動頁：先讀取目前頁面內容和執行錯誤；同時檢查相關按鈕與控制項的選擇器、事件綁定、初始化、disabled 狀態和遮擋層，因為無反應不一定會拋出錯誤。只做必要的 HTML/JavaScript 定點修改，保留其他內容和互動；不要只解釋。修復後簡要說明改動，並請我重新點擊驗證。",
+      "agentPromptSlide": "本頁問題回報：{{report}}\n我授權你依照這則回報重新生成目前投影片。請先讀取目前頁面內容，再直接重新生成本頁內容和講解以解決問題；不要只解釋。完成後簡要說明改動並提醒我檢查頁面。"
+    }
   },
   "edit": {
     "proMode": "專業模式",

@@ -1,41 +1,46 @@
-# Generation Requirements
+# Slide Assignment
 
-## Scene Information
+## Source Content
 
 - **Title**: {{title}}
-- **Description**: {{description}}
+- **Purpose**: {{description}}
 - **Key Points**:
   {{keyPoints}}
 
 {{teacherContext}}
 
+## Page Design Brief
+
+Treat the following as planning data. Execute it visually; do not print its labels on the slide.
+
+{{slideDesignBrief}}
+
 ## Available Resources
 
-{{#if mediaElementEnabled}}
-- **Available Media**: {{assignedImages}}
-{{/if}}
-- **Canvas Size**: {{canvas_width}} × {{canvas_height}} px
+{{assignedImages}}
 
-## Output Requirements
+- **Canvas**: {{canvas_width}} x {{canvas_height}} px
 
-Based on the scene information above, generate a complete Canvas/PPT component for one page.
+## Language
 
-## Language Directive
 {{languageDirective}}
 
-**Must Follow**:
+## Required Result
 
-1. Output pure JSON directly, without any explanation or description
-2. Do not wrap with ```json code blocks
-3. Do not add any text before or after the JSON
-4. Ensure the JSON format is correct and can be parsed directly
+Create one complete Canvas/PPT page that communicates the source content through the selected layout family.
+
+1. Output one pure JSON object with `background` and `elements`
+2. Do not use markdown fences or add text outside the JSON
+3. Target 6-14 elements, never exceed 16, and use at most 8 separate text elements
+4. Use a real diagram, flow, comparison, timeline, chart, table, code sample, formula, decision path, example, or meaningful media composition when the content supports it
+5. Do not merely place the key points into three equal cards
+6. Keep the slide readable at presentation distance and preserve whitespace
+7. Follow the TextElement height reference in the system prompt
 {{#if imageElementEnabled}}
-- Use only the provided image IDs (for example, `img_1`) for source image `src` fields
+8. Image `src` values must use only the supplied image IDs
 {{/if}}
 {{#if generatedVideoEnabled}}
-- Use only the provided generated video media refs for video `mediaRef` fields
+9. Video `mediaRef` values must use only the supplied generated video refs
 {{/if}}
-5. All TextElement `height` values must be selected from the quick reference table in the system prompt
 
-**Output Structure Example**:
-{"background":{"type":"solid","color":"#ffffff"},"elements":[{"id":"title_001","type":"text","left":60,"top":50,"width":880,"height":76,"content":"<p style=\"font-size:32px;\"><strong>Title Content</strong></p>","defaultFontName":"","defaultColor":"#333333"},{"id":"content_001","type":"text","left":60,"top":150,"width":880,"height":130,"content":"<p style=\"font-size:18px;\">• Point One</p><p style=\"font-size:18px;\">• Point Two</p><p style=\"font-size:18px;\">• Point Three</p>","defaultFontName":"","defaultColor":"#333333"}]}
+Return the JSON now.

@@ -41,6 +41,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { AlertTriangle } from 'lucide-react';
 import { VisuallyHidden } from 'radix-ui';
+import type { SceneFeedbackSubmission } from '@/components/stage/scene-feedback-button';
 
 /**
  * Imperative handle exposed via `ref` so the parent (`Stage`) can tear
@@ -60,6 +61,8 @@ interface PlaybackChromeRootProps {
   readonly canEnterProMode?: boolean;
   /** Pro Switch click handler — parent coordinates editLock + teardown. */
   readonly onEnterProMode?: () => void;
+  /** Starts the current-page AI repair flow through the parent-owned edit entry. */
+  readonly onSceneFeedback?: (submission: SceneFeedbackSubmission) => Promise<boolean>;
 }
 
 /**
@@ -70,7 +73,10 @@ interface PlaybackChromeRootProps {
  * the engine wind down cleanly.
  */
 export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackChromeRootProps>(
-  function PlaybackChromeRoot({ onRetryOutline, canEnterProMode, onEnterProMode }, ref) {
+  function PlaybackChromeRoot(
+    { onRetryOutline, canEnterProMode, onEnterProMode, onSceneFeedback },
+    ref,
+  ) {
     const { t } = useI18n();
     const {
       mode,
@@ -1048,6 +1054,8 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
               mode={mode}
               canEdit={!!canEnterProMode}
               onToggleEditMode={onEnterProMode}
+              currentScene={currentScene}
+              onSceneFeedback={onSceneFeedback}
             />
           )}
 

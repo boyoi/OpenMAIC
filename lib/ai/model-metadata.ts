@@ -228,6 +228,11 @@ const doubaoSeed20Effort: ThinkingCapability = {
 const minimaxM3Thinking = toggleCapability('anthropic', false);
 
 const THINKING_CAPABILITIES: Record<string, ThinkingCapability> = {
+  [getModelMetadataKey('openai', 'gpt-5.6-sol')]: effortCapability(
+    'openai',
+    ['low', 'medium', 'high', 'xhigh', 'max'],
+    'max',
+  ),
   [getModelMetadataKey('openai', 'gpt-5.5')]: effortCapability(
     'openai',
     ['low', 'medium', 'high', 'xhigh'],

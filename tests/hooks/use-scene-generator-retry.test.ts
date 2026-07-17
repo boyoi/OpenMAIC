@@ -141,6 +141,50 @@ describe('browser scene generation retry wrappers', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
+  it('retries transient statuses carried by a heartbeat-streamed response', async () => {
+    const { fetchSceneContent } = await import('@/lib/hooks/use-scene-generator');
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse(200, { success: false, error: 'rate limited', _httpStatus: 429 }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { success: true, content: { elements: [] } }));
+
+    const result = await fetchSceneContent(
+      {
+        outline,
+        allOutlines: [outline],
+        stageId: 'stage-1',
+        stageInfo: { name: 'Retry Course' },
+      },
+      undefined,
+      retryOptions,
+    );
+
+    expect(result).toMatchObject({ success: true, content: { elements: [] } });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry permanent statuses carried by a heartbeat-streamed response', async () => {
+    const { fetchSceneActions } = await import('@/lib/hooks/use-scene-generator');
+    mockFetch.mockResolvedValue(
+      jsonResponse(200, { success: false, error: 'unauthorized', _httpStatus: 401 }),
+    );
+
+    const result = await fetchSceneActions(
+      {
+        outline,
+        allOutlines: [outline],
+        content: { elements: [] },
+        stageId: 'stage-1',
+      },
+      undefined,
+      retryOptions,
+    );
+
+    expect(result).toMatchObject({ success: false, error: 'unauthorized' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('rethrows an aborted scene content request', async () => {
     const { fetchSceneContent } = await import('@/lib/hooks/use-scene-generator');
     const abort = Object.assign(new Error('Aborted'), { name: 'AbortError' });

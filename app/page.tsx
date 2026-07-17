@@ -552,8 +552,8 @@ function HomePage() {
             />
 
             {/* Toolbar row */}
-            <div className="px-3 pb-3 flex items-end gap-2">
-              <div className="flex-1 min-w-0">
+            <div className="px-3 pb-3 flex flex-wrap items-end justify-end gap-2 sm:flex-nowrap sm:justify-start">
+              <div className="w-full min-w-0 sm:w-auto sm:flex-1">
                 <GenerationToolbar
                   webSearch={form.webSearch}
                   onWebSearchChange={(v) => updateForm('webSearch', v)}

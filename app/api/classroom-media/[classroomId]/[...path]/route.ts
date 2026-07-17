@@ -20,6 +20,25 @@ const MIME_TYPES: Record<string, string> = {
   '.aac': 'audio/aac',
 };
 
+export async function resolveClassroomMediaFilePath(
+  classroomsDir: string,
+  classroomId: string,
+  pathSegments: string[],
+): Promise<string | null> {
+  const classroomDir = path.join(classroomsDir, classroomId);
+  const filePath = path.join(classroomDir, ...pathSegments);
+  const [resolvedBase, realPath] = await Promise.all([
+    fs.realpath(classroomDir),
+    fs.realpath(filePath),
+  ]);
+
+  if (!realPath.startsWith(resolvedBase + path.sep) && realPath !== resolvedBase) {
+    return null;
+  }
+
+  return realPath;
+}
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ classroomId: string; path: string[] }> },
@@ -43,13 +62,12 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid path' }, { status: 404 });
   }
 
-  const filePath = path.join(CLASSROOMS_DIR, classroomId, ...pathSegments);
-  const resolvedBase = path.resolve(CLASSROOMS_DIR, classroomId);
-
   try {
-    // Resolve symlinks and verify the real path stays within the classroom dir
-    const realPath = await fs.realpath(filePath);
-    if (!realPath.startsWith(resolvedBase + path.sep) && realPath !== resolvedBase) {
+    // Resolve both sides before comparing. Production keeps data behind a
+    // runtime symlink, so comparing a real file path with an unresolved base
+    // path incorrectly rejects valid media as an escape.
+    const realPath = await resolveClassroomMediaFilePath(CLASSROOMS_DIR, classroomId, pathSegments);
+    if (!realPath) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 

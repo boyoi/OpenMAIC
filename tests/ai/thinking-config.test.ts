@@ -121,6 +121,20 @@ describe('thinking config normalization', () => {
     expect(thinking?.effortValues).toEqual(['low', 'medium', 'high', 'xhigh']);
   });
 
+  it('normalizes GPT-5.6 Sol to max effort by default', () => {
+    const thinking = getThinking('openai', 'gpt-5.6-sol');
+
+    expect(getDefaultThinkingConfig(thinking)).toEqual({
+      mode: 'enabled',
+      effort: 'max',
+    });
+    expect(normalizeThinkingConfig(thinking, undefined)).toEqual({
+      mode: 'enabled',
+      effort: 'max',
+    });
+    expect(thinking?.effortValues).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
   it('normalizes Claude 4.5+ thinking as effort levels', () => {
     const thinking = getThinking('anthropic', 'claude-sonnet-4-6');
     const opus48Thinking = getThinking('anthropic', 'claude-opus-4-8');

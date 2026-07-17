@@ -6,6 +6,49 @@ import { jsonrepair } from 'jsonrepair';
 import { createLogger } from '@/lib/logger';
 const log = createLogger('Generation');
 
+/** Whether the response contains a balanced top-level JSON object or array. */
+export function hasCompleteJsonEnvelope(response: string): boolean {
+  for (let start = 0; start < response.length; start++) {
+    const first = response[start];
+    if (first !== '{' && first !== '[') continue;
+
+    const stack: string[] = [first];
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = start + 1; i < response.length; i++) {
+      const char = response[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (char === '\\' && inString) {
+        escapeNext = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (char === '{' || char === '[') {
+        stack.push(char);
+        continue;
+      }
+      if (char !== '}' && char !== ']') continue;
+
+      const expected = char === '}' ? '{' : '[';
+      if (stack.at(-1) !== expected) break;
+      stack.pop();
+      if (stack.length === 0) return true;
+    }
+  }
+
+  return false;
+}
+
 function repairQuotedPropertyFragments(jsonStr: string): string {
   return jsonStr.replace(
     /([,{]\s*)"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(true|false|null|[+-]?\d+(?:\.\d+)?)"(?=\s*[,}])/g,

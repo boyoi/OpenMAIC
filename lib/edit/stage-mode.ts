@@ -9,19 +9,28 @@ export interface StageEditModeContext {
   currentSceneId: string | null;
   sceneCount: number;
   generatingOutlineCount: number;
+  generationStatus: 'idle' | 'generating' | 'paused' | 'completed' | 'error';
+  canPauseGeneration: boolean;
   hasCurrentScene: boolean;
 }
 
 /**
  * Whether edit mode should remain active for the given stage state.
- * Returns false in cases that would otherwise strand the user in an empty
- * edit shell — pending scene, no scenes, generation in flight, or no current
- * scene resolved yet.
+ * Returns false in cases that would otherwise strand the user in an empty edit
+ * shell. A completed current scene may still be edited while later outlines are
+ * pending when the caller can pause that generation before switching modes.
  */
 export function isCurrentSceneEditable(ctx: StageEditModeContext): boolean {
   if (ctx.currentSceneId === PENDING_SCENE_ID) return false;
   if (ctx.sceneCount === 0) return false;
-  if (ctx.generatingOutlineCount > 0) return false;
+  if (
+    ctx.generatingOutlineCount > 0 &&
+    ctx.generationStatus !== 'paused' &&
+    ctx.generationStatus !== 'error' &&
+    !ctx.canPauseGeneration
+  ) {
+    return false;
+  }
   if (!ctx.hasCurrentScene) return false;
   return true;
 }

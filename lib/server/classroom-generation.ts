@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { callLLM } from '@/lib/ai/llm';
+import { callLLM, collectStreamedLLMText } from '@/lib/ai/llm';
 import { createStageAPI } from '@/lib/api/stage-api';
 import type { StageStore } from '@/lib/api/stage-api-types';
 import {
@@ -224,7 +224,7 @@ export async function generateClassroom(
   };
 
   const sceneAiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
-    const result = await callLLM(
+    return collectStreamedLLMText(
       {
         model: languageModel,
         messages: [
@@ -235,10 +235,8 @@ export async function generateClassroom(
         maxRetries: 0,
       },
       'generate-classroom-scene',
-      undefined,
       classroomThinking,
     );
-    return result.text;
   };
 
   const searchQueryAiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
@@ -450,6 +448,7 @@ export async function generateClassroom(
           agents,
           languageDirective,
           allowProceduralSkill: vocationalActive,
+          allOutlines: outlines,
         }),
       {
         label: `scene ${index + 1}/${outlines.length} content`,
@@ -529,8 +528,18 @@ export async function generateClassroom(
     });
 
     try {
-      await generateTTSForClassroom(scenes, stageId, options.baseUrl);
-      log.info('TTS generation complete');
+      const ttsResult = await generateTTSForClassroom(scenes, stageId, options.baseUrl);
+      if (ttsResult.skippedReason) {
+        log.warn(`TTS generation skipped: ${ttsResult.skippedReason}`);
+      } else if (ttsResult.attempted === 0) {
+        log.warn('TTS generation skipped: no usable speech actions');
+      } else if (ttsResult.failed > 0) {
+        log.warn(
+          `TTS generation partially complete: ${ttsResult.generated}/${ttsResult.attempted} audio files`,
+        );
+      } else {
+        log.info(`TTS generation complete: ${ttsResult.generated} audio files`);
+      }
     } catch (err) {
       log.warn('TTS generation phase failed, continuing:', err);
     }

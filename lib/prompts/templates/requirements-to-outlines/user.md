@@ -76,6 +76,12 @@ Never return a bare array. Never omit `languageDirective` or `courseTitle`. All 
 
 ### Special Notes
 
+- **slide scenes must include semantic visual planning**:
+   ```json
+   "slideIntent": "concept",
+   "visualBrief": "Describe the content-specific diagram, comparison, worked example, data view, code path, or decision aid to show"
+   ```
+
 - **quiz scenes must include quizConfig**:
    ```json
    "quizConfig": {
@@ -92,6 +98,7 @@ Never return a bare array. Never omit `languageDirective` or `courseTitle`. All 
    - Provide appropriate widgetOutline for the widget type
 - **Scene count**: Based on inferred duration, typically 1-2 scenes per minute
 - **Quiz placement**: Recommend inserting a quiz every 3-5 slides for assessment
+- **Slide visual planning**: Every slide scene must include `slideIntent` and `visualBrief`. The visual brief must name a useful content artifact and must not be a generic style request or automatic card grid.
 - **Language**: Infer from the user's requirement text and context, then output all content in the inferred language
 - **If web search results are provided**, reference specific findings and sources in scene descriptions and keyPoints. The search results provide up-to-date information — incorporate it to make the course content current and accurate.
 

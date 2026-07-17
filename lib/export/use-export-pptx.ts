@@ -21,6 +21,7 @@ import { latexToOmml } from '@/lib/export/latex-to-omml';
 import { createLogger } from '@/lib/logger';
 import { inlineHtmlAssets, createAssetFetcher } from './inline-assets';
 import { createProxiedFetch } from './proxied-fetch';
+import { getExportAvailability } from './export-availability';
 
 const log = createLogger('ExportPPTX');
 
@@ -316,10 +317,16 @@ function getOutlineOption(outline: PPTElementOutline, ratioPx2Pt: number): pptxg
 
 // ── Link config ──
 
-function getLinkOption(link: PPTElementLink, slides: Slide[]): pptxgen.HyperlinkProps | null {
+function getLinkOption(
+  link: PPTElementLink,
+  slides: Slide[],
+  slideNumberById?: ReadonlyMap<string, number>,
+): pptxgen.HyperlinkProps | null {
   const { type, target } = link;
   if (type === 'web') return { url: target };
   if (type === 'slide') {
+    const exportedSlideNumber = slideNumberById?.get(target);
+    if (exportedSlideNumber !== undefined) return { slide: exportedSlideNumber };
     const index = slides.findIndex((slide) => slide.id === target);
     if (index !== -1) return { slide: index + 1 };
   }
@@ -356,6 +363,262 @@ function buildSpeakerNotes(scene: Scene): string {
   return parts.join('\n');
 }
 
+interface PptxExportOptions {
+  /** Preserve the stage order and insert static pages for interactive scenes. */
+  orderedScenes?: readonly Scene[];
+  /** Localized label supplied by the UI; defaults keep direct test callers simple. */
+  interactiveLabel?: string;
+  interactiveResourceLabel?: string;
+}
+
+type PptxExportPage =
+  | { kind: 'slide'; slide: Slide; scene?: Scene }
+  | { kind: 'interactive'; scene: Scene };
+
+const INTERACTIVE_PREVIEW_TAGS = new Set([
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'p',
+  'li',
+  'button',
+  'label',
+  'figcaption',
+  'caption',
+]);
+const INTERACTIVE_HIDDEN_TAGS = new Set(['head', 'script', 'style', 'template', 'svg', 'canvas']);
+
+function normalizeInteractiveText(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function visibleAstText(node: AST): string {
+  if ('content' in node) return node.type === 'text' ? node.content : '';
+  if (INTERACTIVE_HIDDEN_TAGS.has(node.tagName.toLowerCase())) return '';
+  return node.children.map(visibleAstText).join(' ');
+}
+
+/** Extract a compact, script-free summary without executing untrusted HTML. */
+export function extractInteractivePreviewText(html: string, limit = 5): string[] {
+  if (!html.trim() || limit <= 0) return [];
+
+  let ast: AST[];
+  try {
+    ast = toAST(html);
+  } catch {
+    return [];
+  }
+
+  const items: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string) => {
+    const normalized = normalizeInteractiveText(value);
+    if (normalized.length < 2) return;
+    const clipped = normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+    const key = clipped.toLocaleLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(clipped);
+  };
+
+  const visit = (nodes: AST[]) => {
+    for (const node of nodes) {
+      if (!('tagName' in node)) continue;
+      const tagName = node.tagName.toLowerCase();
+      if (INTERACTIVE_HIDDEN_TAGS.has(tagName)) continue;
+      if (INTERACTIVE_PREVIEW_TAGS.has(tagName)) add(visibleAstText(node));
+      if (items.length >= limit) return;
+      visit(node.children);
+      if (items.length >= limit) return;
+    }
+  };
+  visit(ast);
+
+  if (items.length === 0) add(ast.map(visibleAstText).join(' '));
+  return items.slice(0, limit);
+}
+
+function buildExportPages(
+  slides: Slide[],
+  slideScenes: Scene[],
+  orderedScenes?: readonly Scene[],
+): PptxExportPage[] {
+  if (!orderedScenes) {
+    return slides.map((slide, index) => ({ kind: 'slide', slide, scene: slideScenes[index] }));
+  }
+
+  const slideBySceneId = new Map<string, Slide>();
+  for (let index = 0; index < slideScenes.length; index++) {
+    const scene = slideScenes[index];
+    const slide = slides[index];
+    if (scene && slide) slideBySceneId.set(scene.id, slide);
+  }
+
+  const pages: PptxExportPage[] = [];
+  for (const scene of orderedScenes) {
+    if (scene.content.type === 'slide') {
+      const slide = slideBySceneId.get(scene.id) ?? (scene.content as SlideContent).canvas;
+      pages.push({ kind: 'slide', slide, scene });
+    } else if (scene.content.type === 'interactive') {
+      pages.push({ kind: 'interactive', scene });
+    }
+  }
+  return pages;
+}
+
+function addInteractivePlaceholder(
+  pptx: pptxgen,
+  pptxSlide: pptxgen.Slide,
+  scene: Scene,
+  viewportRatio: number,
+  viewportSize: number,
+  ratioPx2Inch: number,
+  options: PptxExportOptions,
+) {
+  if (scene.content.type !== 'interactive') return;
+
+  const width = viewportSize / ratioPx2Inch;
+  const height = (viewportSize * viewportRatio) / ratioPx2Inch;
+  const label = options.interactiveLabel || 'INTERACTIVE SCENE';
+  const resourceLabel = options.interactiveResourceLabel || 'OPENMAIC LIVE';
+  const previewItems = scene.content.html
+    ? extractInteractivePreviewText(scene.content.html).filter(
+        (item) => item.toLocaleLowerCase() !== scene.title.trim().toLocaleLowerCase(),
+      )
+    : [];
+  const previewText =
+    previewItems.length > 0
+      ? previewItems.map((item) => `- ${item}`).join('\n\n')
+      : 'This page contains live controls, diagrams, or simulations.';
+  const liveUrl = /^https?:\/\//i.test(scene.content.url) ? scene.content.url : undefined;
+
+  pptxSlide.background = { color: 'F4F7F8' };
+  pptxSlide.addShape(pptx.ShapeType.rect, {
+    x: 0,
+    y: 0,
+    w: width,
+    h: 0.08,
+    fill: { color: '0F766E' },
+    line: { color: '0F766E', transparency: 100 },
+  });
+  pptxSlide.addShape(pptx.ShapeType.roundRect, {
+    x: 0.65,
+    y: 0.42,
+    w: Math.min(2.25, width * 0.25),
+    h: 0.34,
+    rectRadius: 0.06,
+    fill: { color: '0F766E' },
+    line: { color: '0F766E', transparency: 100 },
+  });
+  pptxSlide.addText(label, {
+    x: 0.79,
+    y: 0.49,
+    w: Math.min(1.98, width * 0.22),
+    h: 0.18,
+    margin: 0,
+    color: 'FFFFFF',
+    bold: true,
+    fontFace: DEFAULT_FONT_FAMILY,
+    fontSize: 10,
+    fit: 'shrink',
+  });
+  pptxSlide.addText('PPTX STATIC PREVIEW', {
+    x: Math.max(3.1, width - 3.0),
+    y: 0.49,
+    w: 2.35,
+    h: 0.18,
+    margin: 0,
+    color: '64748B',
+    bold: true,
+    align: 'right',
+    fontFace: 'Arial',
+    fontSize: 9,
+    charSpacing: 1.1,
+  });
+  pptxSlide.addText(scene.title || label, {
+    x: 0.65,
+    y: 0.88,
+    w: width - 1.3,
+    h: 0.52,
+    margin: 0,
+    color: '111827',
+    bold: true,
+    fontFace: DEFAULT_FONT_FAMILY,
+    fontSize: 26,
+    fit: 'shrink',
+  });
+
+  const frameY = 1.55;
+  const frameH = Math.max(2.5, height - 2.35);
+  pptxSlide.addShape(pptx.ShapeType.roundRect, {
+    x: 0.65,
+    y: frameY,
+    w: width - 1.3,
+    h: frameH,
+    rectRadius: 0.08,
+    fill: { color: 'FFFFFF' },
+    line: { color: 'CBD5E1', width: 1 },
+    shadow: { type: 'outer', color: '94A3B8', opacity: 0.18, blur: 1.5, angle: 45, offset: 1 },
+  });
+  pptxSlide.addShape(pptx.ShapeType.rect, {
+    x: 0.66,
+    y: frameY + 0.01,
+    w: width - 1.32,
+    h: 0.42,
+    fill: { color: 'E8EEF0' },
+    line: { color: 'E8EEF0', transparency: 100 },
+  });
+  for (let index = 0; index < 3; index++) {
+    pptxSlide.addShape(pptx.ShapeType.ellipse, {
+      x: 0.88 + index * 0.2,
+      y: frameY + 0.16,
+      w: 0.08,
+      h: 0.08,
+      fill: { color: index === 0 ? 'F59E0B' : index === 1 ? '0F766E' : '94A3B8' },
+      line: { transparency: 100 },
+    });
+  }
+  pptxSlide.addText(previewText, {
+    x: 0.98,
+    y: frameY + 0.7,
+    w: width - 1.96,
+    h: Math.max(1.25, frameH - 1.45),
+    margin: 0,
+    color: '334155',
+    fontFace: DEFAULT_FONT_FAMILY,
+    fontSize: 15,
+    breakLine: false,
+    valign: 'middle',
+    fit: 'shrink',
+    paraSpaceAfter: 7,
+  });
+
+  const footerText = liveUrl ? `${resourceLabel}  |  ${liveUrl}` : resourceLabel;
+  pptxSlide.addText(footerText, {
+    x: 0.86,
+    y: height - 0.5,
+    w: width - 1.72,
+    h: 0.2,
+    margin: 0,
+    color: liveUrl ? '0F766E' : '64748B',
+    bold: Boolean(liveUrl),
+    align: 'center',
+    fontFace: liveUrl ? 'Arial' : DEFAULT_FONT_FAMILY,
+    fontSize: 10,
+    fit: 'shrink',
+    hyperlink: liveUrl ? { url: liveUrl } : undefined,
+  });
+}
+
 // Exported for the round-trip integration test harness — the test wires its
 // own slides + ratios in and inspects the resulting PPTX bytes via JSZip.
 // The hook below is still the only intended runtime caller.
@@ -366,6 +629,7 @@ export async function buildPptxBlob(
   viewportSize: number,
   ratioPx2Inch: number,
   ratioPx2Pt: number,
+  options: PptxExportOptions = {},
 ): Promise<Blob> {
   const pptx = new pptxgen();
 
@@ -374,16 +638,36 @@ export async function buildPptxBlob(
   else if (viewportRatio === 0.75) pptx.layout = 'LAYOUT_4x3';
   else pptx.layout = 'LAYOUT_16x9';
 
-  for (let slideIdx = 0; slideIdx < slides.length; slideIdx++) {
-    const slide = slides[slideIdx];
+  const pages = buildExportPages(slides, slideScenes, options.orderedScenes);
+  const slideNumberById = new Map<string, number>();
+  pages.forEach((page, index) => {
+    if (page.kind === 'slide') slideNumberById.set(page.slide.id, index + 1);
+  });
+
+  for (const page of pages) {
     const pptxSlide = pptx.addSlide();
 
     // ── Speaker Notes ──
-    const scene = slideScenes[slideIdx];
+    const scene = page.scene;
     if (scene) {
       const notes = buildSpeakerNotes(scene);
       if (notes) pptxSlide.addNotes(notes);
     }
+
+    if (page.kind === 'interactive') {
+      addInteractivePlaceholder(
+        pptx,
+        pptxSlide,
+        page.scene,
+        viewportRatio,
+        viewportSize,
+        ratioPx2Inch,
+        options,
+      );
+      continue;
+    }
+
+    const slide = page.slide;
 
     // ── Background ──
     if (slide.background) {
@@ -515,7 +799,7 @@ export async function buildPptxBlob(
         if (el.flipV) options.flipV = el.flipV;
         if (el.rotate) options.rotate = el.rotate;
         if (el.link) {
-          const linkOption = getLinkOption(el.link, slides);
+          const linkOption = getLinkOption(el.link, slides, slideNumberById);
           if (linkOption) options.hyperlink = linkOption;
         }
         if (el.filters?.opacity) options.transparency = 100 - parseInt(el.filters.opacity);
@@ -578,7 +862,7 @@ export async function buildPptxBlob(
           if (el.flipH) imgOptions.flipH = el.flipH;
           if (el.flipV) imgOptions.flipV = el.flipV;
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides);
+            const linkOption = getLinkOption(el.link, slides, slideNumberById);
             if (linkOption) imgOptions.hyperlink = linkOption;
           }
           pptxSlide.addImage(imgOptions);
@@ -619,7 +903,7 @@ export async function buildPptxBlob(
           if (el.outline?.width) shapeOptions.line = getOutlineOption(el.outline, ratioPx2Pt);
           if (el.rotate) shapeOptions.rotate = el.rotate;
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides);
+            const linkOption = getLinkOption(el.link, slides, slideNumberById);
             if (linkOption) shapeOptions.hyperlink = linkOption;
           }
 
@@ -662,7 +946,7 @@ export async function buildPptxBlob(
           if (el.flipV) patternOptions.flipV = el.flipV;
           if (el.rotate) patternOptions.rotate = el.rotate;
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides);
+            const linkOption = getLinkOption(el.link, slides, slideNumberById);
             if (linkOption) patternOptions.hyperlink = linkOption;
           }
           pptxSlide.addImage(patternOptions);
@@ -702,7 +986,7 @@ export async function buildPptxBlob(
         for (let i = 0; i < el.data.series.length; i++) {
           const item = el.data.series[i];
           chartData.push({
-            name: `Series ${i + 1}`,
+            name: el.data.legends[i],
             labels: el.data.labels,
             values: item,
           });
@@ -890,6 +1174,62 @@ export async function buildPptxBlob(
         pptxSlide.addTable(tableData, tableOptions);
       }
 
+      // ── CODE ──
+      else if (el.type === 'code') {
+        const x = el.left / ratioPx2Inch;
+        const y = el.top / ratioPx2Inch;
+        const w = el.width / ratioPx2Inch;
+        const h = el.height / ratioPx2Inch;
+        const headerHeightPx = el.fileName ? 34 : 18;
+        const paddingPx = 16;
+
+        pptxSlide.addShape(pptx.ShapeType.roundRect, {
+          x,
+          y,
+          w,
+          h,
+          fill: { color: 'FAFBFC' },
+          line: { color: 'D1D5DB', width: 1 },
+        });
+
+        if (el.fileName) {
+          pptxSlide.addText(el.fileName, {
+            x: (el.left + paddingPx) / ratioPx2Inch,
+            y: (el.top + 7) / ratioPx2Inch,
+            w: (el.width - paddingPx * 2) / ratioPx2Inch,
+            h: 24 / ratioPx2Inch,
+            margin: 0,
+            fontFace: 'Consolas',
+            fontSize: 12 / ratioPx2Pt,
+            color: '6B7280',
+            bold: true,
+          });
+        }
+
+        const codeText = el.lines
+          .map((line, index) => {
+            if (!el.showLineNumbers) return line.content;
+            const lineNumber = String(index + 1).padStart(String(el.lines.length).length, ' ');
+            return `${lineNumber}  ${line.content}`;
+          })
+          .join('\n');
+
+        pptxSlide.addText(codeText, {
+          x: (el.left + paddingPx) / ratioPx2Inch,
+          y: (el.top + headerHeightPx) / ratioPx2Inch,
+          w: (el.width - paddingPx * 2) / ratioPx2Inch,
+          h: (el.height - headerHeightPx - 12) / ratioPx2Inch,
+          margin: 0,
+          breakLine: false,
+          fontFace: 'Consolas',
+          fontSize: (el.fontSize || 16) / ratioPx2Pt,
+          color: '24292E',
+          valign: 'top',
+          paraSpaceAfter: 0,
+          fit: 'shrink',
+        });
+      }
+
       // ── LATEX ──
       else if (el.type === 'latex') {
         // Try native OMML formula first (editable in PowerPoint)
@@ -947,7 +1287,7 @@ export async function buildPptxBlob(
             h: el.height / ratioPx2Inch,
           };
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides);
+            const linkOption = getLinkOption(el.link, slides, slideNumberById);
             if (linkOption) latexOptions.hyperlink = linkOption;
           }
 
@@ -1106,10 +1446,24 @@ export function useExportPPTX() {
   const slideScenes = scenes.filter((s) => s.content.type === 'slide');
   const slides = slideScenes.map((s) => (s.content as SlideContent).canvas);
 
+  const getCurrentAvailability = useCallback(() => {
+    const stageState = useStageStore.getState();
+    const activeStageId = stageState.stage?.id;
+    return getExportAvailability({
+      scenes: stageState.scenes,
+      generatingOutlineCount: stageState.generatingOutlines.length,
+      failedOutlineCount: stageState.failedOutlines.length,
+      generationStatus: stageState.generationStatus,
+      mediaTaskStatuses: Object.values(useMediaGenerationStore.getState().tasks)
+        .filter((task) => !activeStageId || task.stageId === activeStageId)
+        .map((task) => task.status),
+    });
+  }, []);
+
   // Shared guard + state wrapper for export actions
   const withExportGuard = useCallback(
-    (action: () => Promise<void>) => {
-      if (exportingRef.current || slides.length === 0) return;
+    (available: boolean, action: () => Promise<void>) => {
+      if (exportingRef.current || !available) return;
       exportingRef.current = true;
       setExporting(true);
       setTimeout(async () => {
@@ -1124,12 +1478,13 @@ export function useExportPPTX() {
         }
       }, 100);
     },
-    [slides.length, t],
+    [t],
   );
 
   // ── Export PPTX only ──
   const exportPPTX = useCallback(() => {
-    withExportGuard(async () => {
+    const availability = getCurrentAvailability();
+    withExportGuard(availability.canExportPPTX, async () => {
       const fileName = stage?.name || 'slides';
       const blob = await buildPptxBlob(
         slides,
@@ -1138,14 +1493,22 @@ export function useExportPPTX() {
         viewportSize,
         ratioPx2Inch,
         ratioPx2Pt,
+        {
+          orderedScenes: scenes,
+          interactiveLabel: t('generation.sceneTypeInteractive'),
+          interactiveResourceLabel: t('export.resourcePack'),
+        },
       );
       saveAs(blob, `${fileName}.pptx`);
       toast.success(t('export.exportSuccess'));
+      if (availability.isPartial) toast.warning(t('export.partialWarning'));
     });
   }, [
+    getCurrentAvailability,
     withExportGuard,
     slides,
     slideScenes,
+    scenes,
     stage,
     viewportSize,
     viewportRatio,
@@ -1156,7 +1519,8 @@ export function useExportPPTX() {
 
   // ── Export Resource Pack (PPTX + interactive HTML pages as ZIP) ──
   const exportResourcePack = useCallback(() => {
-    withExportGuard(async () => {
+    const availability = getCurrentAvailability();
+    withExportGuard(availability.canExportResourcePack, async () => {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
       const fileName = stage?.name || 'slides';
@@ -1169,6 +1533,11 @@ export function useExportPPTX() {
         viewportSize,
         ratioPx2Inch,
         ratioPx2Pt,
+        {
+          orderedScenes: scenes,
+          interactiveLabel: t('generation.sceneTypeInteractive'),
+          interactiveResourceLabel: t('export.resourcePack'),
+        },
       );
       zip.file(`${fileName}.pptx`, pptxBlob);
 
@@ -1199,6 +1568,7 @@ export function useExportPPTX() {
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       saveAs(zipBlob, `${fileName}.zip`);
       toast.success(t('export.exportSuccess'));
+      if (availability.isPartial) toast.warning(t('export.partialWarning'));
       if (failedAssetUrls.size > 0) {
         const hosts = [
           ...new Set(
@@ -1217,6 +1587,7 @@ export function useExportPPTX() {
       }
     });
   }, [
+    getCurrentAvailability,
     withExportGuard,
     slides,
     slideScenes,

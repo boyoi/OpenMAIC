@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Archive,
   Download,
   FileDown,
@@ -29,6 +30,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import type { StageMode } from '@/lib/types/stage';
+import { getExportAvailability } from '@/lib/export/export-availability';
 
 interface HeaderControlsProps {
   readonly mode?: StageMode;
@@ -71,20 +73,27 @@ export function HeaderControls({
   // playback and edit chrome so the icon's screen position is stable
   // across mode swaps (was previously in `Header` only, missing from
   // CommandBar's right cluster).
+  const stageId = useStageStore((s) => s.stage?.id);
   const scenes = useStageStore((s) => s.scenes);
   const generatingOutlines = useStageStore((s) => s.generatingOutlines);
   const failedOutlines = useStageStore((s) => s.failedOutlines);
+  const generationStatus = useStageStore((s) => s.generationStatus);
   const mediaTasks = useMediaGenerationStore((s) => s.tasks);
   const { exporting: isExporting, exportPPTX, exportResourcePack } = useExportPPTX();
   const { exporting: isExportingZip, exportClassroomZip } = useExportClassroom();
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
 
-  const canExport =
-    scenes.length > 0 &&
-    generatingOutlines.length === 0 &&
-    failedOutlines.length === 0 &&
-    Object.values(mediaTasks).every((task) => task.status === 'done' || task.status === 'failed');
+  const exportAvailability = getExportAvailability({
+    scenes,
+    generatingOutlineCount: generatingOutlines.length,
+    failedOutlineCount: failedOutlines.length,
+    generationStatus,
+    mediaTaskStatuses: Object.values(mediaTasks)
+      .filter((task) => !stageId || task.stageId === stageId)
+      .map((task) => task.status),
+  });
+  const canExport = exportAvailability.canOpenMenu;
 
   const handleClickOutside = useCallback(
     (e: MouseEvent) => {
@@ -249,7 +258,9 @@ export function HeaderControls({
             canExport
               ? isExporting || isExportingZip
                 ? t('export.exporting')
-                : t('export.pptx')
+                : exportAvailability.isPartial
+                  ? t('export.partialWarning')
+                  : t('export.pptx')
               : t('share.notReady')
           }
           className={cn(
@@ -267,13 +278,20 @@ export function HeaderControls({
           )}
         </button>
         {exportMenuOpen && (
-          <div className="absolute top-full mt-2 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[200px]">
+          <div className="absolute top-full mt-2 right-0 w-72 max-w-[calc(100vw-2rem)] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50">
+            {exportAvailability.isPartial && (
+              <div className="flex gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-4 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{t('export.partialWarning')}</span>
+              </div>
+            )}
             <button
               onClick={() => {
                 setExportMenuOpen(false);
                 exportPPTX();
               }}
-              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+              disabled={!exportAvailability.canExportPPTX}
+              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <FileDown className="w-4 h-4 text-gray-400 shrink-0" />
               <span>{t('export.pptx')}</span>
@@ -283,7 +301,8 @@ export function HeaderControls({
                 setExportMenuOpen(false);
                 exportResourcePack();
               }}
-              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+              disabled={!exportAvailability.canExportResourcePack}
+              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Package className="w-4 h-4 text-gray-400 shrink-0" />
               <div>
@@ -298,8 +317,8 @@ export function HeaderControls({
                 setExportMenuOpen(false);
                 exportClassroomZip();
               }}
-              disabled={isExportingZip}
-              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+              disabled={isExportingZip || !exportAvailability.canExportClassroomZip}
+              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Archive className="w-4 h-4 text-gray-400 shrink-0" />
               <div>

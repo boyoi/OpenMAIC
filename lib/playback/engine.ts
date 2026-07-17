@@ -502,13 +502,15 @@ export class PlaybackEngine {
           .play(speechAction.audioId || '', speechAction.audioUrl)
           .then((audioStarted) => {
             if (!audioStarted) {
-              // No pre-generated audio — try browser-native TTS only when it is
-              // the selected provider AND actually enabled (opt-in, #665).
+              // No pre-generated audio (for example, a classroom created before
+              // managed TTS was configured). Use the explicitly enabled browser
+              // voice as an audible fallback instead of silently waiting on a
+              // reading timer. Newly generated classrooms still prefer cached
+              // managed audio through audioPlayer.play() above.
               const settings = useSettingsStore.getState();
               if (
                 hasText &&
                 settings.ttsEnabled &&
-                settings.ttsProviderId === 'browser-native-tts' &&
                 isTTSProviderEnabled(
                   'browser-native-tts',
                   settings.ttsProvidersConfig?.['browser-native-tts'],

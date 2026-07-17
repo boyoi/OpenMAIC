@@ -29,6 +29,7 @@ import {
 } from '@/lib/generation/generation-retry';
 
 const log = createLogger('SceneGenerator');
+const STREAMED_HTTP_STATUS_FIELD = '_httpStatus';
 
 interface SceneContentResult {
   success: boolean;
@@ -91,16 +92,22 @@ function createHttpError(
   response: Response,
   data: { details?: unknown; error?: unknown },
   fallback: string,
+  statusCode = response.status,
 ): Error & { statusCode?: number } {
   const message =
     typeof data.details === 'string'
       ? data.details
       : typeof data.error === 'string'
         ? data.error
-        : `${fallback}: HTTP ${response.status}`;
+        : `${fallback}: HTTP ${statusCode}`;
   const error = new Error(message) as Error & { statusCode?: number };
-  error.statusCode = response.status;
+  error.statusCode = statusCode;
   return error;
+}
+
+function getStreamedHttpStatus(data: Record<string, unknown>): number | undefined {
+  const status = data[STREAMED_HTTP_STATUS_FIELD];
+  return typeof status === 'number' && status >= 400 && status <= 599 ? status : undefined;
 }
 
 function messageFromError(error: unknown, fallback: string): string {
@@ -139,8 +146,9 @@ export async function fetchSceneContent(
         });
 
         const data = await readJsonResponse(response);
-        if (!response.ok) {
-          throw createHttpError(response, data, 'Scene content request failed');
+        const streamedStatus = getStreamedHttpStatus(data);
+        if (!response.ok || streamedStatus) {
+          throw createHttpError(response, data, 'Scene content request failed', streamedStatus);
         }
 
         return data as unknown as SceneContentResult;
@@ -184,8 +192,9 @@ export async function fetchSceneActions(
         });
 
         const data = await readJsonResponse(response);
-        if (!response.ok) {
-          throw createHttpError(response, data, 'Scene actions request failed');
+        const streamedStatus = getStreamedHttpStatus(data);
+        if (!response.ok || streamedStatus) {
+          throw createHttpError(response, data, 'Scene actions request failed', streamedStatus);
         }
 
         return data as unknown as SceneActionsResult;
@@ -655,6 +664,10 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
   const stop = useCallback(() => {
     abortRef.current = true;
+    const state = store.getState();
+    if (state.generatingOutlines.length > 0 && state.generationStatus !== 'completed') {
+      state.setGenerationStatus('paused');
+    }
     store.getState().bumpGenerationEpoch();
     fetchAbortRef.current?.abort();
     mediaAbortRef.current?.abort();

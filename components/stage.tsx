@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { nanoid } from 'nanoid';
 import { useStageStore } from '@/lib/store';
 import { isCurrentSceneEditable } from '@/lib/edit/stage-mode';
 import { isMaicEditorEnabled } from '@/lib/config/feature-flags';
@@ -15,6 +16,8 @@ import { MultiTabEditConflictPrompt } from '@/components/edit/MultiTabEditConfli
 import { InteractiveIframeHost } from '@/components/scene-renderers/InteractiveIframeHost';
 import { CHROME_EASE } from '@/lib/edit/transitions';
 import { preloadEditor } from '@/lib/edit/preload-editor';
+import { getSceneFeedbackKind, type SceneFeedbackIntent } from '@/lib/agent/client/scene-feedback';
+import type { SceneFeedbackSubmission } from '@/components/stage/scene-feedback-button';
 
 /**
  * Stage — top-level classroom container. Dispatches between the two
@@ -32,11 +35,17 @@ import { preloadEditor } from '@/lib/edit/preload-editor';
  */
 export function Stage({
   onRetryOutline,
+  onPauseGeneration,
 }: {
   onRetryOutline?: (outlineId: string) => Promise<void>;
+  onPauseGeneration?: () => void;
 }) {
-  const { mode, setMode, scenes, currentSceneId, generatingOutlines, stage } = useStageStore();
+  const { mode, setMode, scenes, currentSceneId, generatingOutlines, generationStatus, stage } =
+    useStageStore();
   const currentScene = useStageStore((s) => s.getCurrentScene());
+  const [pendingSceneFeedback, setPendingSceneFeedback] = useState<SceneFeedbackIntent | null>(
+    null,
+  );
 
   // Predicate for "can the user enter Pro mode for the current scene?".
   // Single source of truth feeds the Header's Pro Switch state and the
@@ -46,6 +55,8 @@ export function Stage({
     currentSceneId,
     sceneCount: scenes.length,
     generatingOutlineCount: generatingOutlines.length,
+    generationStatus,
+    canPauseGeneration: !!onPauseGeneration,
     hasCurrentScene: !!currentScene,
   });
 
@@ -55,41 +66,98 @@ export function Stage({
   const editLock = useEditModeLock(stage?.id);
 
   const playbackRef = useRef<PlaybackChromeRootHandle>(null);
+  const sceneFeedbackSubmissionInFlightRef = useRef(false);
 
-  // Pro Switch handler. Edit→playback is a plain flip (PlaybackChromeRoot
-  // will mount fresh; its engine effect re-inits). Playback→edit must
-  // (1) refuse on lock conflict, (2) await SSE / engine / TTS teardown
-  // so PlaybackChromeRoot is quiescent before it unmounts.
+  // Shared playback→edit entry used by both the Pro Switch and current-page
+  // feedback. Keeping lock acquisition, generation pause and playback teardown
+  // in one path prevents the feedback shortcut from bypassing editor safety.
+  const enterEditMode = useCallback(
+    async (expectedSceneId?: string): Promise<boolean> => {
+      if (mode === 'edit') return true;
+      if (!isEditable) return false;
+      if (!editLock.acquire()) return false;
+      if (generatingOutlines.length > 0) {
+        onPauseGeneration?.();
+      }
+      // Load the editor chunk (fonts + slide surface) BEFORE flipping mode,
+      // so the edit chrome animates in with its content already present and
+      // the slide surface registered — no mid-animation pop-in / NOOP flash.
+      // Runs concurrently with teardown; the import is promise-cached so it's
+      // a no-op on subsequent toggles.
+      const editorLoad = preloadEditor();
+      try {
+        await Promise.all([playbackRef.current?.teardown(), editorLoad]);
+      } catch (err) {
+        // Teardown failed after the cross-tab lock was acquired but before we
+        // flipped into edit mode. Release the lock we just took: otherwise it
+        // stays HELD while mode stays 'playback', and the release effect (keyed
+        // on `mode`) never re-fires, stranding the lock until tab close and
+        // blocking this and every other tab from Pro mode. Stay in playback so
+        // the failure surfaces rather than half-entering edit mode.
+        editLock.release();
+        console.error('[Stage] Pro mode entry failed during teardown', err);
+        return false;
+      }
+      // Freeze the page the feedback was created for. If navigation somehow won
+      // the race while playback was tearing down, do not send the repair to a
+      // different scene.
+      if (expectedSceneId && useStageStore.getState().currentSceneId !== expectedSceneId) {
+        editLock.release();
+        return false;
+      }
+      setMode('edit');
+      return true;
+    },
+    [editLock, generatingOutlines.length, isEditable, mode, onPauseGeneration, setMode],
+  );
+
   const handleToggleEditMode = useCallback(async () => {
     if (mode === 'edit') {
       setMode('playback');
       return;
     }
-    if (!editLock.acquire()) return;
-    // Load the editor chunk (fonts + slide surface) BEFORE flipping mode,
-    // so the edit chrome animates in with its content already present and
-    // the slide surface registered — no mid-animation pop-in / NOOP flash.
-    // Runs concurrently with teardown; the import is promise-cached so it's
-    // a no-op on subsequent toggles.
-    const editorLoad = preloadEditor();
-    try {
-      await Promise.all([playbackRef.current?.teardown(), editorLoad]);
-    } catch (err) {
-      // Teardown failed after the cross-tab lock was acquired but before we
-      // flipped into edit mode. Release the lock we just took: otherwise it
-      // stays HELD while mode stays 'playback', and the release effect (keyed
-      // on `mode`) never re-fires, stranding the lock until tab close and
-      // blocking this and every other tab from Pro mode. Stay in playback so
-      // the failure surfaces rather than half-entering edit mode.
-      editLock.release();
-      console.error('[Stage] Pro mode entry failed during teardown', err);
-      return;
-    }
-    setMode('edit');
-  }, [editLock, mode, setMode]);
+    await enterEditMode();
+  }, [enterEditMode, mode, setMode]);
 
-  // Auto-exit edit mode when the current scene becomes uneditable
-  // (pending generation, no scenes, currently generating).
+  const handleSceneFeedback = useCallback(
+    async ({ sceneId, prompt }: SceneFeedbackSubmission): Promise<boolean> => {
+      if (sceneFeedbackSubmissionInFlightRef.current) return false;
+      sceneFeedbackSubmissionInFlightRef.current = true;
+
+      const state = useStageStore.getState();
+      const targetScene = state.getSceneById(sceneId);
+      if (
+        state.currentSceneId !== sceneId ||
+        !targetScene ||
+        !getSceneFeedbackKind(targetScene) ||
+        !prompt.trim()
+      ) {
+        sceneFeedbackSubmissionInFlightRef.current = false;
+        return false;
+      }
+
+      const intent: SceneFeedbackIntent = { id: nanoid(), sceneId, prompt };
+      setPendingSceneFeedback(intent);
+      try {
+        const entered = await enterEditMode(sceneId);
+        if (!entered) {
+          setPendingSceneFeedback((current) => (current?.id === intent.id ? null : current));
+        }
+        return entered;
+      } finally {
+        sceneFeedbackSubmissionInFlightRef.current = false;
+      }
+    },
+    [enterEditMode],
+  );
+
+  const handleSceneFeedbackConsumed = useCallback((intentId: string) => {
+    setPendingSceneFeedback((current) => (current?.id === intentId ? null : current));
+  }, []);
+
+  // Auto-exit edit mode when the current scene becomes uneditable. Entering edit
+  // mode pauses later-scene generation first, so a materialized current scene
+  // remains repairable even when other outlines are pending.
   useEffect(() => {
     if (mode === 'edit' && !isEditable) {
       setMode('playback');
@@ -134,6 +202,8 @@ export function Stage({
               scene={currentScene}
               isEditable={isEditable}
               onToggleEditMode={toggleHandler}
+              pendingSceneFeedback={pendingSceneFeedback}
+              onSceneFeedbackConsumed={handleSceneFeedbackConsumed}
             />
           </motion.div>
         ) : (
@@ -150,6 +220,7 @@ export function Stage({
               onRetryOutline={onRetryOutline}
               canEnterProMode={isEditable}
               onEnterProMode={toggleHandler}
+              onSceneFeedback={handleSceneFeedback}
             />
           </motion.div>
         )}
