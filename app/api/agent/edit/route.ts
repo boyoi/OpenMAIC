@@ -53,6 +53,9 @@ interface AgentEditBody {
 /** Max prior turns carried into context (keeps the prompt bounded). */
 const MAX_HISTORY_TURNS = 24;
 
+/** Keep long-thinking agent turns alive through Cloudflare / reverse proxies. */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
 /** Convert the client's text-only history into pi `AgentMessage`s. */
 function toHistoryMessages(history: AgentEditBody['history']): AgentMessage[] {
   if (!Array.isArray(history)) return [];
@@ -158,36 +161,104 @@ export async function POST(req: NextRequest) {
   log.info(`agent edit turn [model=${modelString}] scene=${body.scene?.id ?? 'none'}`);
 
   const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (event: AgentEvent) => {
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-        } catch {
-          /* controller closed */
-        }
-      };
-      const unsubscribe = agent.subscribe((event) => {
-        send(event);
-      });
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let closed = false;
+  let runAborted = false;
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+  const cleanup = () => {
+    stopHeartbeat();
+    unsubscribe?.();
+    unsubscribe = null;
+    req.signal.removeEventListener('abort', onRequestAbort);
+  };
+  const abortRun = () => {
+    if (runAborted) return;
+    runAborted = true;
+    agent.abort();
+    abortController.abort();
+  };
+  const terminate = (closeController: boolean) => {
+    if (closed) return;
+    closed = true;
+    cleanup();
+    abortRun();
+    if (closeController) {
       try {
-        await agent.prompt(message);
-        await agent.waitForIdle();
-      } catch (err) {
-        log.error(`agent run failed: ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
-        unsubscribe();
-        try {
-          controller.enqueue(encoder.encode('event: close\ndata: {}\n\n'));
-        } catch {
-          /* ignore */
-        }
-        controller.close();
+        controllerRef?.close();
+      } catch {
+        /* already closed */
       }
+    }
+  };
+  const enqueue = (payload: string): boolean => {
+    if (closed || !controllerRef) return false;
+    try {
+      controllerRef.enqueue(encoder.encode(payload));
+      return true;
+    } catch {
+      terminate(false);
+      return false;
+    }
+  };
+  const finish = () => {
+    if (closed) return;
+    enqueue('event: close\ndata: {}\n\n');
+    if (closed) return;
+    closed = true;
+    cleanup();
+    try {
+      controllerRef?.close();
+    } catch {
+      /* already closed */
+    }
+  };
+  function onRequestAbort() {
+    terminate(true);
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+      if (req.signal.aborted) {
+        terminate(true);
+        return;
+      }
+      req.signal.addEventListener('abort', onRequestAbort, { once: true });
+
+      // Flush response headers immediately, then keep the connection active
+      // while a reasoning-heavy model is silent before its first AgentEvent.
+      if (!enqueue(': connected\n\n')) return;
+      heartbeatTimer = setInterval(() => enqueue(': heartbeat\n\n'), HEARTBEAT_INTERVAL_MS);
+
+      void (async () => {
+        const send = (event: AgentEvent) => {
+          enqueue(`data: ${JSON.stringify(event)}\n\n`);
+        };
+        try {
+          unsubscribe = agent.subscribe((event) => {
+            send(event);
+          });
+          await agent.prompt(message);
+          await agent.waitForIdle();
+        } catch (err) {
+          if (!runAborted && !req.signal.aborted) {
+            log.error(`agent run failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } finally {
+          finish();
+        }
+      })();
     },
     cancel() {
-      agent.abort();
-      abortController.abort();
+      terminate(false);
     },
   });
 
@@ -196,6 +267,7 @@ export async function POST(req: NextRequest) {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
     },
   });
 }
