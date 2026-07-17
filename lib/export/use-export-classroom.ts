@@ -28,6 +28,15 @@ import { createProxiedFetch } from './proxied-fetch';
 import type { SceneContent } from '@/lib/types/stage';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { getExportAvailability } from './export-availability';
+import {
+  assertClassroomExportValid,
+  ClassroomExportValidationError,
+  validateClassroomInlineFailures,
+  validateClassroomManifest,
+  validateClassroomScenes,
+  validateClassroomZipBlob,
+  type ClassroomInlineFailure,
+} from './classroom-zip-validation';
 
 export async function inlineSceneContent(
   content: SceneContent,
@@ -60,11 +69,13 @@ export function useExportClassroom() {
         .filter((task) => task.stageId === stage.id)
         .map((task) => task.status),
     });
+    if (!availability.canExportClassroomZip) return;
 
     setExporting(true);
     const toastId = toast.loading(t('export.exporting'));
 
     try {
+      assertClassroomExportValid(validateClassroomScenes(scenes));
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
 
@@ -127,18 +138,16 @@ export function useExportClassroom() {
         stage.generatedAgentConfigs.forEach((a, i) => agentIdToIndex.set(a.id, i));
       }
 
-      const aggregateReport: InlineReport = { inlined: [], failed: [] };
+      const inlineFailures: ClassroomInlineFailure[] = [];
       const sharedFetcher = createAssetFetcher({ fetchImpl: createProxiedFetch() });
       const manifestScenes: ManifestScene[] = await Promise.all(
         scenes.map(async (scene) => {
           const { content, report } = await inlineSceneContent(scene.content, {
             fetcher: sharedFetcher,
           });
-          for (const u of report.inlined)
-            if (!aggregateReport.inlined.includes(u)) aggregateReport.inlined.push(u);
-          for (const f of report.failed)
-            if (!aggregateReport.failed.some((g) => g.url === f.url))
-              aggregateReport.failed.push(f);
+          for (const failure of report.failed) {
+            inlineFailures.push({ ...failure, sceneId: scene.id });
+          }
           return {
             type: scene.type,
             title: scene.title,
@@ -162,6 +171,7 @@ export function useExportClassroom() {
           };
         }),
       );
+      assertClassroomExportValid(validateClassroomInlineFailures(inlineFailures));
 
       // 7. Build mediaIndex
       const mediaIndex: Record<string, MediaIndexEntry> = {};
@@ -206,6 +216,9 @@ export function useExportClassroom() {
         scenes: manifestScenes,
         mediaIndex,
       };
+      assertClassroomExportValid(
+        validateClassroomManifest(manifest, { expectedSceneCount: scenes.length }),
+      );
 
       zip.file('manifest.json', JSON.stringify(manifest, null, 2));
 
@@ -222,31 +235,24 @@ export function useExportClassroom() {
 
       // 10. Generate and download
       const zipBlob = await zip.generateAsync({ type: 'blob' });
+      assertClassroomExportValid(
+        await validateClassroomZipBlob(zipBlob, { expectedSceneCount: scenes.length }),
+      );
       const safeName = latestName.replace(/[\\/:*?"<>|]/g, '_') || 'classroom';
       saveAs(zipBlob, `${safeName}${CLASSROOM_ZIP_EXTENSION}`);
 
-      if (aggregateReport.failed.length > 0) {
-        log.warn('Some interactive-scene assets could not be inlined:', aggregateReport.failed);
-        const hosts = [
-          ...new Set(
-            aggregateReport.failed.map((f) => {
-              try {
-                return new URL(f.url).host;
-              } catch {
-                return f.url;
-              }
-            }),
-          ),
-        ];
-        toast.warning(t('export.inlinePartial', { count: aggregateReport.failed.length }), {
-          description: hosts.join(', '),
-        });
-      }
       toast.success(t('export.exportSuccess'), { id: toastId });
-      if (availability.isPartial) toast.warning(t('export.partialWarning'));
     } catch (error) {
       log.error('Classroom ZIP export failed:', error);
-      toast.error(t('export.exportFailed'), { id: toastId });
+      toast.error(t('export.exportFailed'), {
+        id: toastId,
+        description:
+          error instanceof ClassroomExportValidationError
+            ? error.issues[0]?.message
+            : error instanceof Error
+              ? error.message
+              : undefined,
+      });
     } finally {
       setExporting(false);
     }

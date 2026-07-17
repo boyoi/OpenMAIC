@@ -27,19 +27,27 @@ describe('getExportAvailability', () => {
     });
   });
 
-  it('allows completed slides to export while generation is paused or failed', () => {
+  it.each(['generating', 'paused', 'error'] as const)(
+    'blocks every export while generation status is %s',
+    (generationStatus) => {
+      expect(availability({ scenes: [slide], generationStatus })).toEqual({
+        canOpenMenu: false,
+        canExportPPTX: false,
+        canExportResourcePack: false,
+        canExportClassroomZip: false,
+        isPartial: true,
+      });
+    },
+  );
+
+  it('blocks every export when outlines are pending or failed', () => {
     expect(
-      availability({
-        scenes: [slide],
-        generatingOutlineCount: 1,
-        failedOutlineCount: 1,
-        generationStatus: 'paused',
-      }),
+      availability({ scenes: [slide], generatingOutlineCount: 1, failedOutlineCount: 1 }),
     ).toEqual({
-      canOpenMenu: true,
-      canExportPPTX: true,
-      canExportResourcePack: true,
-      canExportClassroomZip: true,
+      canOpenMenu: false,
+      canExportPPTX: false,
+      canExportResourcePack: false,
+      canExportClassroomZip: false,
       isPartial: true,
     });
   });
@@ -64,9 +72,28 @@ describe('getExportAvailability', () => {
     });
   });
 
-  it('warns when generated media is pending or failed', () => {
+  it.each(['pending', 'generating', 'failed'] as const)(
+    'blocks every export when generated media is %s',
+    (mediaStatus) => {
+      expect(availability({ scenes: [slide], mediaTaskStatuses: ['done', mediaStatus] })).toEqual({
+        canOpenMenu: false,
+        canExportPPTX: false,
+        canExportResourcePack: false,
+        canExportClassroomZip: false,
+        isPartial: true,
+      });
+    },
+  );
+
+  it('allows a fully ready idle deck to export', () => {
     expect(
-      availability({ scenes: [slide], mediaTaskStatuses: ['done', 'pending', 'failed'] }).isPartial,
-    ).toBe(true);
+      availability({ scenes: [slide], generationStatus: 'idle', mediaTaskStatuses: ['done'] }),
+    ).toEqual({
+      canOpenMenu: true,
+      canExportPPTX: true,
+      canExportResourcePack: true,
+      canExportClassroomZip: true,
+      isPartial: false,
+    });
   });
 });

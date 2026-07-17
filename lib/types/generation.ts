@@ -156,7 +156,7 @@ export type SlideIntent =
 // ==================== Stage 3 Output: Generated Content ====================
 
 import type { PPTElement, SlideBackground } from '@openmaic/dsl';
-import type { QuizQuestion } from './stage';
+import type { QuizQuestion, SceneQuality } from './stage';
 
 /**
  * AI-generated slide content
@@ -165,6 +165,8 @@ export interface GeneratedSlideContent {
   elements: PPTElement[];
   background?: SlideBackground;
   remark?: string;
+  /** Identifies model candidates versus deterministic fallback content. */
+  quality?: SceneQuality;
 }
 
 /**

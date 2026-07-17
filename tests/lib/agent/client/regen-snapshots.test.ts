@@ -7,6 +7,7 @@ const SNAP = {
   sceneId: 's1',
   content: { type: 'slide', canvas: { id: 'c', elements: [] } } as unknown as SceneContent,
   actions: [{ type: 'speech', id: 'a_old' } as never],
+  quality: { status: 'degraded' as const, issues: ['previous fallback'] },
   // post-edit state, so an undo can be resumed (redo)
   redo: {
     content: {
@@ -14,6 +15,7 @@ const SNAP = {
       canvas: { id: 'c', elements: [{ id: 'e' }] },
     } as unknown as SceneContent,
     actions: [{ type: 'speech', id: 'a_new' } as never],
+    quality: { status: 'candidate' as const, issues: [] },
   },
 };
 
@@ -38,6 +40,7 @@ describe('regen-snapshots store', () => {
     expect(apply).toHaveBeenNthCalledWith(1, 's1', {
       content: SNAP.content,
       actions: SNAP.actions,
+      quality: SNAP.quality,
     });
     expect(useRegenSnapshots.getState().snapshots['call-1'].restored).toBe(true);
 
@@ -46,6 +49,7 @@ describe('regen-snapshots store', () => {
     expect(apply).toHaveBeenNthCalledWith(2, 's1', {
       content: SNAP.redo.content,
       actions: SNAP.redo.actions,
+      quality: SNAP.redo.quality,
     });
     expect(useRegenSnapshots.getState().snapshots['call-1'].restored).toBe(false);
 

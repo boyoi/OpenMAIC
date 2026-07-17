@@ -98,6 +98,10 @@ describe('slide quality fallback', () => {
     expect(result.elements.length).toBeLessThanOrEqual(16);
     expect(textContent(result)).toContain('Build a Pi Agent Application');
     expect(textContent(result)).toContain('Define the agent role');
+    expect(result.quality).toEqual({
+      status: 'degraded',
+      issues: ['too few elements (1/5)'],
+    });
   });
 
   it('replaces an overstuffed model layout instead of displaying it', async () => {
@@ -119,6 +123,10 @@ describe('slide quality fallback', () => {
 
     expect(result.elements.length).toBeLessThanOrEqual(16);
     expect(textContent(result)).toContain('Build a Pi Agent Application');
+    expect(result.quality).toEqual({
+      status: 'degraded',
+      issues: ['too many elements (17/16)'],
+    });
   });
 
   it('falls back when valid JSON contains a non-array elements field', async () => {
@@ -128,6 +136,18 @@ describe('slide quality fallback', () => {
 
     expect(result.elements.length).toBeGreaterThanOrEqual(5);
     expect(textContent(result)).toContain('Build a Pi Agent Application');
+    expect(result.quality).toEqual({ status: 'degraded', issues: ['no elements'] });
+  });
+
+  it('marks an unparseable complete response as degraded', async () => {
+    const aiCall: AICallFn = async () => '{not json}';
+
+    const result = (await generateSceneContent(outline, aiCall)) as GeneratedSlideContent;
+
+    expect(result.quality).toEqual({
+      status: 'degraded',
+      issues: ['model response was not valid JSON'],
+    });
   });
 
   it('keeps a compact valid model layout', async () => {
@@ -136,6 +156,7 @@ describe('slide quality fallback', () => {
     const result = (await generateSceneContent(outline, aiCall)) as GeneratedSlideContent;
 
     expect(textContent(result)).toContain('VALID-LAYOUT-SENTINEL');
+    expect(result.quality).toEqual({ status: 'candidate', issues: [] });
   });
 
   it('normalizes a missing shape viewBox to the DSL width-height tuple', async () => {
@@ -246,6 +267,28 @@ describe('slide quality fallback', () => {
     const result = (await generateSceneContent(outline, aiCall)) as GeneratedSlideContent;
 
     expect(textContent(result)).not.toContain('MALFORMED-CHART-SENTINEL');
+  });
+
+  it('marks a post-processing fallback as degraded with the triggering issue', async () => {
+    const layout = validCompactLayout('POST-PROCESS-SENTINEL');
+    layout.elements[1] = {
+      id: 'missing_image',
+      type: 'image',
+      left: 60,
+      top: 160,
+      width: 400,
+      height: 280,
+      src: 'img_1',
+    };
+    const aiCall: AICallFn = async () => JSON.stringify(layout);
+
+    const result = (await generateSceneContent(outline, aiCall)) as GeneratedSlideContent;
+
+    expect(textContent(result)).not.toContain('POST-PROCESS-SENTINEL');
+    expect(result.quality).toEqual({
+      status: 'degraded',
+      issues: ['post-processing quality issue: too few elements (4/5)'],
+    });
   });
 
   it('uses a compact slide prompt', async () => {

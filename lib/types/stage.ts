@@ -95,6 +95,16 @@ export type AppSceneContent = DslSceneContent | InteractiveContent | PBLContent;
 export type SceneContent = AppSceneContent;
 
 /**
+ * Provenance of generated scene content before the full validation gate runs.
+ * `candidate` is the model-produced slide; `degraded` means generation had to
+ * substitute a deterministic fallback and records why.
+ */
+export interface SceneQuality {
+  status: 'candidate' | 'degraded';
+  issues: string[];
+}
+
+/**
  * The app's concrete scene type: the contract skeleton instantiated with the
  * app's playback action set and full content union.
  *
@@ -102,5 +112,8 @@ export type SceneContent = AppSceneContent;
  * callers keep their original semantics (actions are `Action[]`, content spans
  * all four kinds).
  */
-export type AppScene = DslScene<Action, SceneContent>;
+export type AppScene = DslScene<Action, SceneContent> & {
+  /** Optional for classrooms persisted before generation quality was tracked. */
+  quality?: SceneQuality;
+};
 export type Scene = AppScene;

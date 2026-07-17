@@ -9,7 +9,7 @@
  */
 import { nanoid } from 'nanoid';
 import type { Action } from '@/lib/types/action';
-import type { Scene, SceneContent, InteractiveContent } from '@/lib/types/stage';
+import type { Scene, SceneContent, InteractiveContent, SceneQuality } from '@/lib/types/stage';
 import type { GeneratedSlideContent } from '@/lib/types/generation';
 import { CURRENT_SLIDE_CONTENT_SCHEMA_VERSION } from '@/lib/edit/slide-schema';
 
@@ -75,6 +75,7 @@ export interface RegenerateApplyPlan {
     sceneId: string;
     content: SceneContent;
     actions: Action[];
+    quality?: SceneQuality;
     /** True for narration-only regen — restore reverts actions only, not content. */
     actionsOnly?: boolean;
   } | null;
@@ -92,7 +93,7 @@ export interface RegenerateApplyPlan {
  */
 export function planRegenerateApply(
   details: RegenerateDetails,
-  scene: Pick<Scene, 'content' | 'actions'> | null,
+  scene: Pick<Scene, 'content' | 'actions' | 'quality'> | null,
   toolName?: string,
 ): RegenerateApplyPlan {
   const { sceneId } = details;
@@ -109,7 +110,12 @@ export function planRegenerateApply(
     if (!prev || prev.type !== 'interactive') return { snapshot: null, patch: null };
     const runtime: InteractiveContent = { ...prev, html: details.html };
     const snapshot = scene
-      ? { sceneId, content: scene.content, actions: scene.actions ?? [] }
+      ? {
+          sceneId,
+          content: scene.content,
+          actions: scene.actions ?? [],
+          quality: scene.quality,
+        }
       : null;
     return { snapshot, patch: { content: runtime as SceneContent } };
   }
@@ -129,10 +135,16 @@ export function planRegenerateApply(
     const runtime = toRuntimeSlideContent(details.content, existingCanvas);
     const patch: Partial<Scene> = {
       content: runtime,
+      quality: details.content.quality ?? { status: 'candidate', issues: [] },
       ...(actions.length > 0 ? { actions } : {}),
     };
     const snapshot = scene
-      ? { sceneId, content: scene.content, actions: scene.actions ?? [] }
+      ? {
+          sceneId,
+          content: scene.content,
+          actions: scene.actions ?? [],
+          quality: scene.quality,
+        }
       : null;
     return { snapshot, patch };
   }
@@ -143,7 +155,13 @@ export function planRegenerateApply(
     // content is unchanged here, and re-applying it would clobber later canvas
     // edits + needlessly reseed the edit session.
     const snapshot = scene
-      ? { sceneId, content: scene.content, actions: scene.actions ?? [], actionsOnly: true }
+      ? {
+          sceneId,
+          content: scene.content,
+          actions: scene.actions ?? [],
+          quality: scene.quality,
+          actionsOnly: true,
+        }
       : null;
     return { snapshot, patch: { actions } };
   }

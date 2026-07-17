@@ -8,7 +8,12 @@ import { toast } from 'sonner';
 
 import { useStageStore } from '@/lib/store';
 import { useCanvasStore } from '@/lib/store/canvas';
-import { useMediaGenerationStore, isMediaPlaceholder } from '@/lib/store/media-generation';
+import {
+  useMediaGenerationStore,
+  isMediaPlaceholder,
+  type MediaTask,
+} from '@/lib/store/media-generation';
+import { useSceneRuntimeErrors } from '@/lib/store/scene-runtime-errors';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import type { Slide, PPTElementOutline, PPTElementShadow, PPTElementLink } from '@openmaic/dsl';
 import type { Scene, SlideContent } from '@/lib/types/stage';
@@ -22,11 +27,116 @@ import { createLogger } from '@/lib/logger';
 import { inlineHtmlAssets, createAssetFetcher } from './inline-assets';
 import { createProxiedFetch } from './proxied-fetch';
 import { getExportAvailability } from './export-availability';
+import {
+  assertExportValid,
+  ExportValidationError,
+  validateExportSnapshot,
+  validateInteractiveRuntime,
+  validatePptxBlob,
+  validateSlideRenders,
+  type ExportValidationIssue,
+} from './pptx-validation';
 
 const log = createLogger('ExportPPTX');
 
 const DEFAULT_FONT_SIZE = 16;
 const DEFAULT_FONT_FAMILY = 'Microsoft YaHei';
+
+interface PptxRoundTripModule {
+  parse: (buffer: ArrayBuffer) => Promise<{
+    slides: Array<{ elements?: unknown[]; layoutElements?: unknown[] }>;
+  }>;
+}
+
+function cloneScenesForExport(scenes: readonly Scene[]): Scene[] {
+  if (typeof structuredClone === 'function') return structuredClone(scenes) as Scene[];
+  return JSON.parse(JSON.stringify(scenes)) as Scene[];
+}
+
+function getExpectedPptxPageCount(scenes: readonly Scene[]): number {
+  return scenes.filter(
+    (scene) => scene.content.type === 'slide' || scene.content.type === 'interactive',
+  ).length;
+}
+
+function resolveSlideMediaForValidation(
+  slide: Slide,
+  mediaTasks: Readonly<Record<string, Pick<MediaTask, 'status' | 'objectUrl'>>>,
+): Slide {
+  const resolved =
+    typeof structuredClone === 'function'
+      ? structuredClone(slide)
+      : (JSON.parse(JSON.stringify(slide)) as Slide);
+  for (const element of resolved.elements) {
+    if (element.type === 'image' && isMediaPlaceholder(element.src)) {
+      const task = mediaTasks[element.src];
+      if (task?.status === 'done' && task.objectUrl) element.src = task.objectUrl;
+    }
+    if (element.type === 'video') {
+      const ref = element.mediaRef || element.src;
+      if (ref && isMediaPlaceholder(ref)) {
+        const task = mediaTasks[ref];
+        if (task?.status === 'done' && task.objectUrl) {
+          element.src = task.objectUrl;
+          element.mediaRef = undefined;
+        }
+      }
+    }
+  }
+  if (
+    resolved.background?.type === 'image' &&
+    resolved.background.image &&
+    isMediaPlaceholder(resolved.background.image.src)
+  ) {
+    const task = mediaTasks[resolved.background.image.src];
+    if (task?.status === 'done' && task.objectUrl) {
+      resolved.background.image.src = task.objectUrl;
+    }
+  }
+  return resolved;
+}
+
+async function validatePptxRoundTrip(
+  blob: Blob,
+  expectedPageCount: number,
+): Promise<ExportValidationIssue[]> {
+  try {
+    const url = '/vendor/maic-importer/index.js';
+    const parser = (await import(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      /* @vite-ignore */
+      url
+    )) as PptxRoundTripModule;
+    const parsed = await parser.parse(await blob.arrayBuffer());
+    if (!Array.isArray(parsed.slides) || parsed.slides.length !== expectedPageCount) {
+      return [
+        {
+          code: 'PPTX_ROUNDTRIP_FAILED',
+          message: `PPTX round-trip returned ${parsed.slides?.length ?? 0} pages; expected ${expectedPageCount}`,
+        },
+      ];
+    }
+    const blankPage = parsed.slides.findIndex(
+      (slide) => (slide.elements?.length ?? 0) === 0 && (slide.layoutElements?.length ?? 0) === 0,
+    );
+    return blankPage >= 0
+      ? [
+          {
+            code: 'PPTX_ROUNDTRIP_FAILED',
+            message: `PPTX round-trip produced an empty page at index ${blankPage + 1}`,
+          },
+        ]
+      : [];
+  } catch (error) {
+    return [
+      {
+        code: 'PPTX_ROUNDTRIP_FAILED',
+        message: `PPTX could not be reopened: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    ];
+  }
+}
 
 // ── Color formatting ──
 
@@ -363,17 +473,54 @@ function buildSpeakerNotes(scene: Scene): string {
   return parts.join('\n');
 }
 
-interface PptxExportOptions {
+export interface PptxExportOptions {
   /** Preserve the stage order and insert static pages for interactive scenes. */
   orderedScenes?: readonly Scene[];
   /** Localized label supplied by the UI; defaults keep direct test callers simple. */
   interactiveLabel?: string;
   interactiveResourceLabel?: string;
+  /** Fail instead of silently omitting content that cannot be exported. */
+  strict?: boolean;
 }
 
 type PptxExportPage =
   | { kind: 'slide'; slide: Slide; scene?: Scene }
   | { kind: 'interactive'; scene: Scene };
+
+class StrictPptxExportError extends Error {
+  constructor(context: string, message: string, cause?: unknown) {
+    const causeMessage = cause instanceof Error && cause.message ? ` (${cause.message})` : '';
+    super(`PPTX strict export failed at ${context}: ${message}${causeMessage}`);
+    this.name = 'StrictPptxExportError';
+  }
+}
+
+function failStrictExport(
+  options: PptxExportOptions,
+  context: string,
+  message: string,
+  cause?: unknown,
+): void {
+  if (options.strict) throw new StrictPptxExportError(context, message, cause);
+}
+
+function getLinkOptionForExport(
+  link: PPTElementLink,
+  slides: Slide[],
+  slideNumberById: ReadonlyMap<string, number>,
+  options: PptxExportOptions,
+  context: string,
+): pptxgen.HyperlinkProps | null {
+  const linkOption = getLinkOption(link, slides, slideNumberById);
+  if (!linkOption) {
+    failStrictExport(
+      options,
+      context,
+      `could not resolve ${link.type} link target "${link.target}"`,
+    );
+  }
+  return linkOption;
+}
 
 const INTERACTIVE_PREVIEW_TAGS = new Set([
   'h1',
@@ -629,7 +776,7 @@ export async function buildPptxBlob(
   viewportSize: number,
   ratioPx2Inch: number,
   ratioPx2Pt: number,
-  options: PptxExportOptions = {},
+  exportOptions: PptxExportOptions = {},
 ): Promise<Blob> {
   const pptx = new pptxgen();
 
@@ -638,14 +785,18 @@ export async function buildPptxBlob(
   else if (viewportRatio === 0.75) pptx.layout = 'LAYOUT_4x3';
   else pptx.layout = 'LAYOUT_16x9';
 
-  const pages = buildExportPages(slides, slideScenes, options.orderedScenes);
+  const pages = buildExportPages(slides, slideScenes, exportOptions.orderedScenes);
+  if (pages.length === 0) {
+    failStrictExport(exportOptions, 'presentation', 'no exportable pages were found');
+  }
   const slideNumberById = new Map<string, number>();
   pages.forEach((page, index) => {
     if (page.kind === 'slide') slideNumberById.set(page.slide.id, index + 1);
   });
 
-  for (const page of pages) {
+  for (const [pageIndex, page] of pages.entries()) {
     const pptxSlide = pptx.addSlide();
+    const pageNumber = pageIndex + 1;
 
     // ── Speaker Notes ──
     const scene = page.scene;
@@ -662,12 +813,13 @@ export async function buildPptxBlob(
         viewportRatio,
         viewportSize,
         ratioPx2Inch,
-        options,
+        exportOptions,
       );
       continue;
     }
 
     const slide = page.slide;
+    const slideContext = `page ${pageNumber}, slide "${slide.id}"`;
 
     // ── Background ──
     if (slide.background) {
@@ -705,10 +857,22 @@ export async function buildPptxBlob(
       }
     }
 
-    if (!slide.elements) continue;
+    if (!slide.elements) {
+      failStrictExport(exportOptions, slideContext, 'slide has no elements array');
+      continue;
+    }
 
     // ── Elements ──
     for (const el of slide.elements) {
+      const elementContext = `${slideContext}, ${el.type} element "${el.id}"`;
+      if (el.link && el.type !== 'image' && el.type !== 'shape' && el.type !== 'latex') {
+        failStrictExport(
+          exportOptions,
+          elementContext,
+          `element-level links are not supported for ${el.type} elements`,
+        );
+      }
+
       // ── TEXT ──
       if (el.type === 'text') {
         const textProps = formatHTML(el.content, ratioPx2Pt);
@@ -758,6 +922,12 @@ export async function buildPptxBlob(
           if (task?.status === 'done' && task.objectUrl) {
             resolvedSrc = task.objectUrl;
           } else {
+            const taskState = task ? `status=${task.status}` : 'task not found';
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `generated image placeholder "${el.src}" is not ready (${taskState})`,
+            );
             continue; // Media not ready, skip
           }
         }
@@ -771,16 +941,42 @@ export async function buildPptxBlob(
               log.warn(
                 `Failed to fetch image (HTTP ${resp.status}), skipping element: ${resolvedSrc}`,
               );
+              failStrictExport(
+                exportOptions,
+                elementContext,
+                `failed to fetch image "${resolvedSrc}" (HTTP ${resp.status})`,
+              );
               continue;
             }
             const blob = await resp.blob();
+            if (blob.size === 0) {
+              failStrictExport(
+                exportOptions,
+                elementContext,
+                `image source returned an empty file: "${resolvedSrc}"`,
+              );
+            }
             resolvedSrc = await new Promise<string>((resolve, reject) => {
               const reader = new FileReader();
               reader.onloadend = () => resolve(reader.result as string);
               reader.onerror = reject;
               reader.readAsDataURL(blob);
             });
-          } catch {
+            if (!isBase64Image(resolvedSrc)) {
+              failStrictExport(
+                exportOptions,
+                elementContext,
+                `image conversion did not produce an embeddable data URL for "${resolvedSrc}"`,
+              );
+            }
+          } catch (error) {
+            if (error instanceof StrictPptxExportError) throw error;
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `failed to fetch or convert image "${resolvedSrc}"`,
+              error,
+            );
             log.warn('Failed to convert image to base64, skipping element');
             continue;
           }
@@ -799,7 +995,13 @@ export async function buildPptxBlob(
         if (el.flipV) options.flipV = el.flipV;
         if (el.rotate) options.rotate = el.rotate;
         if (el.link) {
-          const linkOption = getLinkOption(el.link, slides, slideNumberById);
+          const linkOption = getLinkOptionForExport(
+            el.link,
+            slides,
+            slideNumberById,
+            exportOptions,
+            elementContext,
+          );
           if (linkOption) options.hyperlink = linkOption;
         }
         if (el.filters?.opacity) options.transparency = 100 - parseInt(el.filters.opacity);
@@ -850,6 +1052,14 @@ export async function buildPptxBlob(
           svg.appendChild(path);
 
           const base64SVG = svg2Base64(svg);
+          if (!base64SVG) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              'failed to convert special shape SVG to an image',
+            );
+            continue;
+          }
 
           const imgOptions: pptxgen.ImageProps = {
             data: base64SVG,
@@ -862,7 +1072,13 @@ export async function buildPptxBlob(
           if (el.flipH) imgOptions.flipH = el.flipH;
           if (el.flipV) imgOptions.flipV = el.flipV;
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides, slideNumberById);
+            const linkOption = getLinkOptionForExport(
+              el.link,
+              slides,
+              slideNumberById,
+              exportOptions,
+              elementContext,
+            );
             if (linkOption) imgOptions.hyperlink = linkOption;
           }
           pptxSlide.addImage(imgOptions);
@@ -872,7 +1088,14 @@ export async function buildPptxBlob(
             y: el.height / el.viewBox[1],
           };
           const rawPoints = toPoints(el.path);
-          if (!rawPoints.length) continue; // Malformed path — toPoints already logged.
+          if (!rawPoints.length) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `shape path could not be parsed: "${el.path}"`,
+            );
+            continue; // Malformed path — toPoints already logged.
+          }
           const points = formatPoints(rawPoints, ratioPx2Inch, scale);
 
           let fillColor = formatColor(el.fill);
@@ -903,7 +1126,13 @@ export async function buildPptxBlob(
           if (el.outline?.width) shapeOptions.line = getOutlineOption(el.outline, ratioPx2Pt);
           if (el.rotate) shapeOptions.rotate = el.rotate;
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides, slideNumberById);
+            const linkOption = getLinkOptionForExport(
+              el.link,
+              slides,
+              slideNumberById,
+              exportOptions,
+              elementContext,
+            );
             if (linkOption) shapeOptions.hyperlink = linkOption;
           }
 
@@ -946,7 +1175,13 @@ export async function buildPptxBlob(
           if (el.flipV) patternOptions.flipV = el.flipV;
           if (el.rotate) patternOptions.rotate = el.rotate;
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides, slideNumberById);
+            const linkOption = getLinkOptionForExport(
+              el.link,
+              slides,
+              slideNumberById,
+              exportOptions,
+              elementContext,
+            );
             if (linkOption) patternOptions.hyperlink = linkOption;
           }
           pptxSlide.addImage(patternOptions);
@@ -1242,6 +1477,13 @@ export async function buildPptxBlob(
         const omml = el.latex ? latexToOmml(el.latex, fontSize) : null;
 
         if (omml) {
+          if (el.link) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              'element-level links cannot be preserved on a native formula',
+            );
+          }
           pptxSlide.addFormula({
             omml,
             x: el.left / ratioPx2Inch,
@@ -1259,6 +1501,13 @@ export async function buildPptxBlob(
           const vbY = range.minY - sw;
           const vbW = range.maxX - range.minX + sw * 2;
           const vbH = range.maxY - range.minY + sw * 2;
+          if (![vbX, vbY, vbW, vbH].every(Number.isFinite) || vbW <= 0 || vbH <= 0) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `formula fallback SVG path is invalid: "${el.path}"`,
+            );
+          }
 
           const svgNS = 'http://www.w3.org/2000/svg';
           const svg = document.createElementNS(svgNS, 'svg');
@@ -1277,7 +1526,14 @@ export async function buildPptxBlob(
           svg.appendChild(path);
 
           const base64SVG = svg2Base64(svg);
-          if (!base64SVG) continue;
+          if (!base64SVG) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              'failed to convert formula fallback SVG to an image',
+            );
+            continue;
+          }
 
           const latexOptions: pptxgen.ImageProps = {
             data: base64SVG,
@@ -1287,11 +1543,23 @@ export async function buildPptxBlob(
             h: el.height / ratioPx2Inch,
           };
           if (el.link) {
-            const linkOption = getLinkOption(el.link, slides, slideNumberById);
+            const linkOption = getLinkOptionForExport(
+              el.link,
+              slides,
+              slideNumberById,
+              exportOptions,
+              elementContext,
+            );
             if (linkOption) latexOptions.hyperlink = linkOption;
           }
 
           pptxSlide.addImage(latexOptions);
+        } else {
+          failStrictExport(
+            exportOptions,
+            elementContext,
+            `formula "${el.latex}" could not be converted and has no SVG fallback path`,
+          );
         }
       }
 
@@ -1308,11 +1576,20 @@ export async function buildPptxBlob(
           if (task?.status === 'done' && task.objectUrl) {
             resolvedSrc = task.objectUrl;
           } else if (!resolvedSrc || isMediaPlaceholder(resolvedSrc)) {
+            const taskState = task ? `status=${task.status}` : 'task not found';
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `generated ${el.type} media "${mediaLookupKey}" is not ready (${taskState})`,
+            );
             continue; // Media not ready, skip
           }
         }
 
-        if (!resolvedSrc) continue;
+        if (!resolvedSrc) {
+          failStrictExport(exportOptions, elementContext, `${el.type} source is missing`);
+          continue;
+        }
 
         // Fetch blob and convert to base64 for embedding in PPTX
         // (blob: URLs and remote URLs won't work in offline PPTX)
@@ -1322,15 +1599,34 @@ export async function buildPptxBlob(
             log.warn(
               `Failed to fetch media (HTTP ${resp.status}), skipping element: ${resolvedSrc}`,
             );
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `failed to fetch ${el.type} media "${resolvedSrc}" (HTTP ${resp.status})`,
+            );
             continue;
           }
           const blob = await resp.blob();
+          if (blob.size === 0) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `${el.type} source returned an empty file: "${resolvedSrc}"`,
+            );
+          }
           const base64 = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result as string);
             reader.onerror = reject;
             reader.readAsDataURL(blob);
           });
+          if (!base64.startsWith('data:')) {
+            failStrictExport(
+              exportOptions,
+              elementContext,
+              `${el.type} conversion did not produce an embeddable data URL`,
+            );
+          }
 
           const mediaOptions: pptxgen.MediaProps = {
             x: el.left / ratioPx2Inch,
@@ -1419,8 +1715,27 @@ export async function buildPptxBlob(
 
           pptxSlide.addMedia(mediaOptions);
         } catch (err) {
+          if (err instanceof StrictPptxExportError) throw err;
+          failStrictExport(
+            exportOptions,
+            elementContext,
+            `failed to fetch or embed ${el.type} media "${resolvedSrc}"`,
+            err,
+          );
           log.warn(`Failed to embed ${el.type} element:`, err);
         }
+      }
+
+      // A persisted or imported scene can contain a runtime element type that is
+      // outside the current DSL union. Legacy mode keeps omitting it; strict mode
+      // makes that data loss explicit.
+      else {
+        const unknownElement = el as { id?: string; type?: string };
+        failStrictExport(
+          exportOptions,
+          `${slideContext}, element "${unknownElement.id || 'unknown'}"`,
+          `unsupported element type "${unknownElement.type || 'unknown'}"`,
+        );
       }
     }
   }
@@ -1435,16 +1750,11 @@ export function useExportPPTX() {
   const exportingRef = useRef(false);
   const { t } = useI18n();
 
-  const scenes = useStageStore((s) => s.scenes);
-  const stage = useStageStore((s) => s.stage);
   const viewportSize = useCanvasStore.use.viewportSize();
   const viewportRatio = useCanvasStore.use.viewportRatio();
 
   const ratioPx2Inch = 96 * (viewportSize / 960);
   const ratioPx2Pt = (96 / 72) * (viewportSize / 960);
-
-  const slideScenes = scenes.filter((s) => s.content.type === 'slide');
-  const slides = slideScenes.map((s) => (s.content as SlideContent).canvas);
 
   const getCurrentAvailability = useCallback(() => {
     const stageState = useStageStore.getState();
@@ -1460,6 +1770,72 @@ export function useExportPPTX() {
     });
   }, []);
 
+  const buildValidatedPptx = useCallback(async () => {
+    // Freeze one immutable snapshot. Validation and build both use these exact
+    // objects, so an edit that happens while validation runs cannot invalidate
+    // the artifact that is eventually downloaded.
+    const stageState = useStageStore.getState();
+    const orderedScenes = cloneScenesForExport(stageState.scenes);
+    const frozenSlideScenes = orderedScenes.filter((scene) => scene.content.type === 'slide');
+    const frozenSlides = frozenSlideScenes.map((scene) => (scene.content as SlideContent).canvas);
+    const activeStageId = stageState.stage?.id;
+    const mediaTasks = Object.fromEntries(
+      Object.entries(useMediaGenerationStore.getState().tasks).filter(
+        ([, task]) => !activeStageId || task.stageId === activeStageId,
+      ),
+    );
+
+    assertExportValid(
+      validateExportSnapshot({
+        scenes: orderedScenes,
+        generationComplete: stageState.generationComplete,
+        hasOutlines: stageState.outlines.length > 0,
+        mediaTasks,
+        runtimeErrors: useSceneRuntimeErrors.getState().errors,
+      }),
+    );
+
+    const interactiveIssues = (
+      await Promise.all(
+        orderedScenes
+          .filter((scene) => scene.content.type === 'interactive')
+          .map((scene) => validateInteractiveRuntime(scene)),
+      )
+    ).flat();
+    assertExportValid(interactiveIssues);
+    const resolvedSlides = frozenSlides.map((slide) =>
+      resolveSlideMediaForValidation(slide, mediaTasks),
+    );
+    assertExportValid(await validateSlideRenders(resolvedSlides));
+
+    const blob = await buildPptxBlob(
+      resolvedSlides,
+      frozenSlideScenes,
+      viewportRatio,
+      viewportSize,
+      ratioPx2Inch,
+      ratioPx2Pt,
+      {
+        orderedScenes,
+        interactiveLabel: t('generation.sceneTypeInteractive'),
+        interactiveResourceLabel: t('export.resourcePack'),
+        strict: true,
+      },
+    );
+    const expectedPageCount = getExpectedPptxPageCount(orderedScenes);
+    const artifactIssues = [
+      ...(await validatePptxBlob(blob, expectedPageCount)),
+      ...(await validatePptxRoundTrip(blob, expectedPageCount)),
+    ];
+    assertExportValid(artifactIssues);
+
+    return {
+      blob,
+      orderedScenes,
+      fileName: stageState.stage?.name || 'slides',
+    };
+  }, [ratioPx2Inch, ratioPx2Pt, t, viewportRatio, viewportSize]);
+
   // Shared guard + state wrapper for export actions
   const withExportGuard = useCallback(
     (available: boolean, action: () => Promise<void>) => {
@@ -1471,7 +1847,14 @@ export function useExportPPTX() {
           await action();
         } catch (err) {
           log.error('Export failed:', err);
-          toast.error(t('export.exportFailed'));
+          toast.error(t('export.exportFailed'), {
+            description:
+              err instanceof ExportValidationError
+                ? err.issues[0]?.message
+                : err instanceof Error
+                  ? err.message
+                  : undefined,
+          });
         } finally {
           exportingRef.current = false;
           setExporting(false);
@@ -1485,37 +1868,11 @@ export function useExportPPTX() {
   const exportPPTX = useCallback(() => {
     const availability = getCurrentAvailability();
     withExportGuard(availability.canExportPPTX, async () => {
-      const fileName = stage?.name || 'slides';
-      const blob = await buildPptxBlob(
-        slides,
-        slideScenes,
-        viewportRatio,
-        viewportSize,
-        ratioPx2Inch,
-        ratioPx2Pt,
-        {
-          orderedScenes: scenes,
-          interactiveLabel: t('generation.sceneTypeInteractive'),
-          interactiveResourceLabel: t('export.resourcePack'),
-        },
-      );
+      const { blob, fileName } = await buildValidatedPptx();
       saveAs(blob, `${fileName}.pptx`);
       toast.success(t('export.exportSuccess'));
-      if (availability.isPartial) toast.warning(t('export.partialWarning'));
     });
-  }, [
-    getCurrentAvailability,
-    withExportGuard,
-    slides,
-    slideScenes,
-    scenes,
-    stage,
-    viewportSize,
-    viewportRatio,
-    ratioPx2Inch,
-    ratioPx2Pt,
-    t,
-  ]);
+  }, [buildValidatedPptx, getCurrentAvailability, t, withExportGuard]);
 
   // ── Export Resource Pack (PPTX + interactive HTML pages as ZIP) ──
   const exportResourcePack = useCallback(() => {
@@ -1523,29 +1880,13 @@ export function useExportPPTX() {
     withExportGuard(availability.canExportResourcePack, async () => {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
-      const fileName = stage?.name || 'slides';
-
-      // 1. Generate PPTX
-      const pptxBlob = await buildPptxBlob(
-        slides,
-        slideScenes,
-        viewportRatio,
-        viewportSize,
-        ratioPx2Inch,
-        ratioPx2Pt,
-        {
-          orderedScenes: scenes,
-          interactiveLabel: t('generation.sceneTypeInteractive'),
-          interactiveResourceLabel: t('export.resourcePack'),
-        },
-      );
+      const { blob: pptxBlob, orderedScenes, fileName } = await buildValidatedPptx();
       zip.file(`${fileName}.pptx`, pptxBlob);
 
       // 2. Add interactive HTML pages
       const sharedFetcher = createAssetFetcher({ fetchImpl: createProxiedFetch() });
       let interactiveIndex = 0;
-      const failedAssetUrls = new Set<string>();
-      for (const scene of scenes) {
+      for (const scene of orderedScenes) {
         if (scene.content.type === 'interactive' && scene.content.html) {
           interactiveIndex++;
           const safeName = scene.title.replace(/[\\/:*?"<>|]/g, '_');
@@ -1554,11 +1895,13 @@ export function useExportPPTX() {
             fetcher: sharedFetcher,
           });
           if (report.failed.length > 0) {
-            log.warn(
-              'Resource Pack: some interactive-scene assets could not be inlined:',
-              report.failed,
+            throw new ExportValidationError(
+              report.failed.map((failure) => ({
+                code: 'MISSING_MEDIA',
+                message: `Interactive asset could not be embedded: ${failure.url}`,
+                sceneId: scene.id,
+              })),
             );
-            for (const f of report.failed) failedAssetUrls.add(f.url);
           }
           zip.file(htmlFileName, inlinedHtml);
         }
@@ -1568,37 +1911,8 @@ export function useExportPPTX() {
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       saveAs(zipBlob, `${fileName}.zip`);
       toast.success(t('export.exportSuccess'));
-      if (availability.isPartial) toast.warning(t('export.partialWarning'));
-      if (failedAssetUrls.size > 0) {
-        const hosts = [
-          ...new Set(
-            [...failedAssetUrls].map((u) => {
-              try {
-                return new URL(u).host;
-              } catch {
-                return u;
-              }
-            }),
-          ),
-        ];
-        toast.warning(t('export.inlinePartial', { count: failedAssetUrls.size }), {
-          description: hosts.join(', '),
-        });
-      }
     });
-  }, [
-    getCurrentAvailability,
-    withExportGuard,
-    slides,
-    slideScenes,
-    scenes,
-    stage,
-    viewportSize,
-    viewportRatio,
-    ratioPx2Inch,
-    ratioPx2Pt,
-    t,
-  ]);
+  }, [buildValidatedPptx, getCurrentAvailability, t, withExportGuard]);
 
   return { exporting, exportPPTX, exportResourcePack };
 }

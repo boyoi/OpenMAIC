@@ -64,6 +64,7 @@ export function createSceneAPI(store: StageStore) {
           order,
           content,
           actions: params.actions,
+          quality: params.quality,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };

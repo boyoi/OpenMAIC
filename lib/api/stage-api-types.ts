@@ -4,7 +4,14 @@
  * Shared types used across all stage-api sub-modules.
  */
 
-import type { Stage, Scene, SceneContent, SceneType, StageMode } from '@/lib/types/stage';
+import type {
+  Stage,
+  Scene,
+  SceneContent,
+  SceneQuality,
+  SceneType,
+  StageMode,
+} from '@/lib/types/stage';
 import type { PPTElement } from '@openmaic/dsl';
 import type { Action } from '@/lib/types/action';
 
@@ -28,6 +35,7 @@ export interface CreateSceneParams {
   content?: Partial<SceneContent>;
   order?: number;
   actions?: Action[];
+  quality?: SceneQuality;
 }
 
 /**

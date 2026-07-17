@@ -10,7 +10,7 @@ const GEN: GeneratedSlideContent = {
   remark: '',
 };
 
-function slideScene(): Pick<Scene, 'content' | 'actions'> {
+function slideScene(): Pick<Scene, 'content' | 'actions' | 'quality'> {
   return {
     content: {
       type: 'slide',
@@ -24,6 +24,7 @@ function slideScene(): Pick<Scene, 'content' | 'actions'> {
       },
     } as unknown as SceneContent,
     actions: [{ type: 'speech', id: 'a_old' } as never],
+    quality: { status: 'degraded', issues: ['previous fallback'] },
   };
 }
 
@@ -108,6 +109,11 @@ describe('planRegenerateApply', () => {
     };
     expect(patch.content.canvas.elements[0].id).toBe('e_new');
     expect(patch.actions[0].id).toBe('a_new');
+    expect((plan.patch as Partial<Scene>).quality).toEqual({ status: 'candidate', issues: [] });
+    expect(plan.snapshot?.quality).toEqual({
+      status: 'degraded',
+      issues: ['previous fallback'],
+    });
     // Stale animations bound to the replaced element ids are cleared.
     expect(patch.content.canvas.animations).toEqual([]);
     // ...while the snapshot retains the original animations for restore.
@@ -137,6 +143,7 @@ describe('planRegenerateApply', () => {
       sceneId: 's1',
       content: scene.content,
       actions: scene.actions ?? [],
+      quality: scene.quality,
       // narration-only → restore reverts actions only, not slide content
       actionsOnly: true,
     });
@@ -157,7 +164,7 @@ describe('planRegenerateApply', () => {
   });
 });
 
-function interactiveScene(): Pick<Scene, 'content' | 'actions'> {
+function interactiveScene(): Pick<Scene, 'content' | 'actions' | 'quality'> {
   return {
     content: {
       type: 'interactive',
@@ -207,6 +214,7 @@ describe('planRegenerateApply — edit_interactive_html', () => {
       sceneId: 'w1',
       content: scene.content,
       actions: scene.actions,
+      quality: scene.quality,
     });
   });
 

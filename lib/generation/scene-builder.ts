@@ -168,6 +168,7 @@ export function buildCompleteScene(
         type: 'slide',
         canvas: slide,
       },
+      quality: content.quality ?? { status: 'candidate', issues: [] },
       actions,
       createdAt: Date.now(),
       updatedAt: Date.now(),

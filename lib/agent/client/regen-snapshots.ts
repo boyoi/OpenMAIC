@@ -11,12 +11,13 @@
  */
 import { create } from 'zustand';
 import type { Action } from '@/lib/types/action';
-import type { SceneContent } from '@/lib/types/stage';
+import type { SceneContent, SceneQuality } from '@/lib/types/stage';
 
 export interface RegenSnapshot {
   sceneId: string;
   content: SceneContent;
   actions: Action[];
+  quality?: SceneQuality;
   /**
    * Narration-only regen (`regenerate_scene_actions`): the slide content was NOT
    * changed, so Restore must revert ONLY the actions — re-applying the snapshot
@@ -30,7 +31,7 @@ export interface RegenSnapshot {
    * (redo). Absent for cards restored from storage after a refresh, where resume
    * isn't possible (the in-memory state is gone).
    */
-  redo?: { content?: SceneContent; actions?: Action[] };
+  redo?: { content?: SceneContent; actions?: Action[]; quality?: SceneQuality };
 }
 
 /** Re-applies the snapshot to the stage store (injected so the store stays testable).
@@ -38,7 +39,7 @@ export interface RegenSnapshot {
  *  (updateScene shallow-merges), whereas `actions: []` would wipe them. */
 export type RestoreApplyFn = (
   sceneId: string,
-  patch: { content?: SceneContent; actions?: Action[] },
+  patch: { content?: SceneContent; actions?: Action[]; quality?: SceneQuality },
 ) => void;
 
 interface RegenSnapshotsState {
@@ -70,7 +71,7 @@ export const useRegenSnapshots = create<RegenSnapshotsState>((set, get) => ({
         snap.sceneId,
         snap.actionsOnly
           ? { actions: snap.actions }
-          : { content: snap.content, actions: snap.actions },
+          : { content: snap.content, actions: snap.actions, quality: snap.quality },
       );
       set((s) => ({
         snapshots: { ...s.snapshots, [toolCallId]: { ...snap, restored: true } },
@@ -83,9 +84,10 @@ export const useRegenSnapshots = create<RegenSnapshotsState>((set, get) => ({
     // scene's existing narration/content on resume.
     const redo = snap.redo;
     if (!redo) return;
-    const patch: { content?: SceneContent; actions?: Action[] } = {};
+    const patch: { content?: SceneContent; actions?: Action[]; quality?: SceneQuality } = {};
     if (redo.content !== undefined) patch.content = redo.content;
     if (redo.actions !== undefined) patch.actions = redo.actions;
+    if (redo.quality !== undefined) patch.quality = redo.quality;
     apply(snap.sceneId, patch);
     set((s) => ({
       snapshots: { ...s.snapshots, [toolCallId]: { ...snap, restored: false } },

@@ -1851,21 +1851,22 @@ async function generateSlideContent(
 
   const response = await aiCall(prompts.system, userPrompt, visionImages);
   let generatedData: GeneratedSlideData;
+  const quality: NonNullable<GeneratedSlideContent['quality']> = {
+    status: 'candidate',
+    issues: [],
+  };
+  const applyReliableFallback = (reason: string): GeneratedSlideData => {
+    quality.status = 'degraded';
+    quality.issues.push(reason);
+    return buildReliableSlideFallback(outline, reason, allOutlines);
+  };
 
   if (!hasCompleteJsonEnvelope(response)) {
-    generatedData = buildReliableSlideFallback(
-      outline,
-      'model response was incomplete',
-      allOutlines,
-    );
+    generatedData = applyReliableFallback('model response was incomplete');
   } else {
     const parsed = parseJsonResponse<GeneratedSlideData>(response);
     if (!parsed) {
-      generatedData = buildReliableSlideFallback(
-        outline,
-        'model response was not valid JSON',
-        allOutlines,
-      );
+      generatedData = applyReliableFallback('model response was not valid JSON');
     } else {
       const parsedElements =
         Array.isArray(parsed.elements) &&
@@ -1877,9 +1878,7 @@ async function generateSlideContent(
         elements: fixElementDefaults(parsedElements, assignedImages),
       };
       const qualityIssue = slideQualityIssue(normalized);
-      generatedData = qualityIssue
-        ? buildReliableSlideFallback(outline, qualityIssue, allOutlines)
-        : normalized;
+      generatedData = qualityIssue ? applyReliableFallback(qualityIssue) : normalized;
     }
   }
 
@@ -1927,11 +1926,7 @@ async function generateSlideContent(
     elements: videoNormalizedElements,
   });
   if (postProcessingIssue) {
-    generatedData = buildReliableSlideFallback(
-      outline,
-      `post-processing quality issue: ${postProcessingIssue}`,
-      allOutlines,
-    );
+    generatedData = applyReliableFallback(`post-processing quality issue: ${postProcessingIssue}`);
     videoNormalizedElements = fixElementDefaults(generatedData.elements);
   }
 
@@ -1959,6 +1954,7 @@ async function generateSlideContent(
     elements: processedElements,
     background,
     remark: generatedData.remark || outline.description,
+    quality,
   };
 }
 
@@ -2813,6 +2809,7 @@ export function createSceneWithActions(
         canvas: slide,
       },
       actions,
+      quality: content.quality ?? { status: 'candidate', issues: [] },
     });
 
     return sceneResult.success ? (sceneResult.data ?? null) : null;

@@ -457,8 +457,7 @@ export async function generateClassroom(
       },
     );
     if (!content) {
-      log.warn(`Skipping scene "${safeOutline.title}" — content generation failed`);
-      continue;
+      throw new Error(`Scene content generation failed: ${safeOutline.title}`);
     }
 
     const actions = await withGenerationRetry(
@@ -476,8 +475,7 @@ export async function generateClassroom(
 
     const sceneId = createSceneWithActions(safeOutline, content, actions, api);
     if (!sceneId) {
-      log.warn(`Skipping scene "${safeOutline.title}" — scene creation failed`);
-      continue;
+      throw new Error(`Scene creation failed: ${safeOutline.title}`);
     }
 
     generatedScenes += 1;
@@ -494,8 +492,20 @@ export async function generateClassroom(
   const scenes = store.getState().scenes;
   log.info(`Pipeline complete: ${scenes.length} scenes generated`);
 
-  if (scenes.length === 0) {
-    throw new Error('No scenes were generated');
+  if (scenes.length !== outlines.length) {
+    throw new Error(
+      `Incomplete classroom generation: generated ${scenes.length}/${outlines.length} scenes`,
+    );
+  }
+  const degradedScenes = scenes.filter((scene) => scene.quality?.status === 'degraded');
+  if (degradedScenes.length > 0) {
+    const details = degradedScenes
+      .map(
+        (scene) =>
+          `${scene.title}: ${scene.quality?.issues[0] || 'generation used fallback content'}`,
+      )
+      .join('; ');
+    throw new Error(`Classroom quality validation failed: ${details}`);
   }
 
   // Phase: Media generation (after all scenes generated)
@@ -508,13 +518,26 @@ export async function generateClassroom(
       totalScenes: outlines.length,
     });
 
-    try {
-      const mediaMap = await generateMediaForClassroom(outlines, stageId, options.baseUrl);
-      replaceMediaPlaceholders(scenes, mediaMap);
-      log.info(`Media generation complete: ${Object.keys(mediaMap).length} files`);
-    } catch (err) {
-      log.warn('Media generation phase failed, continuing:', err);
+    const mediaMap = await generateMediaForClassroom(outlines, stageId, options.baseUrl);
+    const expectedMediaIds = new Set(
+      outlines.flatMap((outline) =>
+        (outline.mediaGenerations ?? [])
+          .filter(
+            (request) =>
+              (request.type === 'image' && input.enableImageGeneration) ||
+              (request.type === 'video' && input.enableVideoGeneration),
+          )
+          .map((request) => request.elementId),
+      ),
+    );
+    const missingMediaIds = [...expectedMediaIds].filter((elementId) => !mediaMap[elementId]);
+    if (missingMediaIds.length > 0) {
+      throw new Error(
+        `Media generation incomplete: missing ${missingMediaIds.length}/${expectedMediaIds.size} files (${missingMediaIds.join(', ')})`,
+      );
     }
+    replaceMediaPlaceholders(scenes, mediaMap);
+    log.info(`Media generation complete: ${Object.keys(mediaMap).length} files`);
   }
 
   // Phase: TTS generation
@@ -527,22 +550,27 @@ export async function generateClassroom(
       totalScenes: outlines.length,
     });
 
-    try {
-      const ttsResult = await generateTTSForClassroom(scenes, stageId, options.baseUrl);
-      if (ttsResult.skippedReason) {
-        log.warn(`TTS generation skipped: ${ttsResult.skippedReason}`);
-      } else if (ttsResult.attempted === 0) {
-        log.warn('TTS generation skipped: no usable speech actions');
-      } else if (ttsResult.failed > 0) {
-        log.warn(
-          `TTS generation partially complete: ${ttsResult.generated}/${ttsResult.attempted} audio files`,
-        );
-      } else {
-        log.info(`TTS generation complete: ${ttsResult.generated} audio files`);
-      }
-    } catch (err) {
-      log.warn('TTS generation phase failed, continuing:', err);
+    const hasExpectedSpeech = scenes.some((scene) =>
+      (scene.actions ?? []).some(
+        (action) =>
+          action.type === 'speech' &&
+          typeof action.text === 'string' &&
+          action.text.trim().length > 0,
+      ),
+    );
+    const ttsResult = await generateTTSForClassroom(scenes, stageId, options.baseUrl);
+    if (ttsResult.skippedReason) {
+      throw new Error(`TTS generation skipped: ${ttsResult.skippedReason}`);
     }
+    if (hasExpectedSpeech && ttsResult.attempted === 0) {
+      throw new Error('TTS generation incomplete: no speech actions were attempted');
+    }
+    if (ttsResult.failed > 0 || ttsResult.generated !== ttsResult.attempted) {
+      throw new Error(
+        `TTS generation incomplete: generated ${ttsResult.generated}/${ttsResult.attempted} audio files`,
+      );
+    }
+    log.info(`TTS generation complete: ${ttsResult.generated} audio files`);
   }
 
   await options.onProgress?.({
